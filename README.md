@@ -18,4 +18,7 @@ The associated documents are explained in detail below:
     
 **6) communityComposition.Rmd** - (Chapter 9 of the manuscript) This script explores patterns of species richness and metrics of community composition. Species accumulation curves are generated from this code. Shannon and Simpson's diversity indices are also produced. 
 
+**7) HMSC_final.Rmd** - (Chapter 10 of the manuscript) This script generates a joint species distribution model, which explores habitat use trends for the mammalian community we collected data on. This model incorporates environmental predictor variables, species traits data, and species  interactions. This script creates several output plots from this model, including the variance explained by the model and the community and speceies levels, species-level associations to environmental predictor variables, species traits associations to environmental predictor variables, and species interaction associations. Model fit tests are also run in this script. 
+
+
     
