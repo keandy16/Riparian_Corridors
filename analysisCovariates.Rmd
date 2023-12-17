@@ -1,0 +1,568 @@
+---
+title: "Analysis Covariates"
+output: html_document
+author: Katherine Andy
+---
+
+The purpose of this script is to assemble the variables that will be brought into the models in later steps. Most of the covariates in this analysis have been assembled outside of R as part of the additional data I have been collecting from my field research. 
+
+This script follows the technique developed by Christopher Beirne and the Wildlife Coexistence Lab at the University of British Columbia, and the WildCAM network. I will be following the stepwise process outlined in Chapter 7 of this manuscript: https://wildcolab.github.io/Introduction-to-Camera-Trap-Data-Management-and-Analysis-in-R/index.html.
+
+
+Clear the workspace
+```{r}
+rm(list=ls())
+```
+
+
+
+Load the packages
+```{r}
+library(kableExtra);library(dplyr); library(sf); library(MODISTools); library(lubridate); library(corrplot); library(traitdata); library(terra); library(osmdata); library(elevatr)
+```
+
+
+Read in species list and camera locations dataframes so we can find species-specific traits and location-level covariates
+```{r}
+sp_summary <- read.csv("data/processed_data/_species_list.csv", header=T)
+
+locs <- read.csv("data/processed_data/_camera_locations.csv", header=T)
+```
+
+##Species Traits
+
+Let's explore home range data (from this dataset: https://github.com/SHoeks/HomeRange/raw/main/HomeRange_1.02.tar.gz). Outputs from this code will be species-specific home ranges. 
+```{r}
+# install the HomeRange R package
+install.packages("https://github.com/SHoeks/HomeRange/raw/main/HomeRange_1.02.tar.gz", 
+                 repos=NULL, 
+                 method="libcurl")
+# alternatively, install the HomeRange R package using install_github:
+remotes::install_github("SHoeks/HomeRange", subdir='pkg')
+
+# load package into R
+library('HomeRange')
+
+# package information
+?HomeRange
+
+# view HomeRange metadata directly as PDF in the browser
+ViewMetaData()
+
+# get the dataset, this function automatically downloads and imports the data
+HomeRangeData <- GetHomeRangeData() # by default IncludeReferences is set to FALSE
+
+# get data with the references attached
+HomeRangeDataWithRefs <- GetHomeRangeData(IncludeReferences = TRUE) 
+
+#Create an 'sp' column to match with the sp_summary dataset
+HomeRangeDataWithRefs$sp <- gsub(" ", ".", HomeRangeDataWithRefs$Species, fixed=TRUE)
+
+#I want an average home range per species (there are several variables like age class and sex that I want to average)
+HomeRange<- HomeRangeDataWithRefs %>% group_by(sp) %>% summarise(
+  home_range = mean(Home_Range_km2),
+  body_mass = mean(Body_mass_kg)
+)
+
+#Pull out the information I am interested in
+tmp <- HomeRange[, c("sp","home_range")]
+
+#Join back into species summary spreadsheet - will only contain information on species classifications
+sp_summary <- left_join(sp_summary, tmp)
+
+```
+
+Now let's look into some other species traits from the EltonTraits 1.0 database. We are interested in body mass, activity patterns, and diet patterns.
+
+First, load the traitdata package
+```{r}
+library(traitdata)
+```
+
+
+Pull data from the database
+```{r}
+data("elton_mammals")
+```
+
+Make a new column "sp" which matches the species column in the "sp_summary" dataset. This will serve as the key variable to extract the trait data
+```{r}
+elton_mammals$sp <- paste0(elton_mammals$Genus,"." ,elton_mammals$Species)
+```
+
+Pull out body mass, activity, and diet pattern columns
+```{r}
+tmp <- elton_mammals[, c("sp","BodyMass.Value", "Activity.Nocturnal", "Activity.Crepuscular",   "Activity.Diurnal", "Diet.Inv", "Diet.Vend", "Diet.Vect", "Diet.Vfish", "Diet.Vunk", "Diet.Scav", "Diet.Fruit", "Diet.Nect", "Diet.Seed", "Diet.PlantO")]
+
+# Rename the columns to make them more usable
+tmp <- tmp %>% rename(
+              mass_g = BodyMass.Value,
+              act_noct = Activity.Nocturnal,
+              act_crep = Activity.Crepuscular,
+              act_diur = Activity.Diurnal,
+              diet_inv = Diet.Inv,
+              diet_vend = Diet.Vend,
+              diet_vect = Diet.Vect,
+              diet_vfish = Diet.Vfish,
+              diet_vunk = Diet.Vunk,
+              diet_scav = Diet.Scav,
+              diet_fruit = Diet.Fruit,
+              diet_nect = Diet.Nect,
+              diet_seed = Diet.Seed,
+              diet_plant0 = Diet.PlantO)
+
+#join the new columns back into the sp_summary data
+sp_summary <- left_join(sp_summary, tmp)
+```
+
+Now we have all our species covariate data.
+
+Save the species list
+```{r}
+write.csv(sp_summary, paste0("data/processed_data/", locs$project_id[1],"_species_list.csv"), row.names = F)
+```
+
+
+##Camera Station Covariates
+
+Read in covariates list generated from outside of R
+```{r}
+local_covs <- read.csv("data/covariates.csv")
+```
+
+Join with the camera locations dataframe
+```{r}
+locs <- left_join(locs, local_covs)   # From the dplyr package
+```
+
+
+Convert locs dataframe into sf format. This allows us to use a spatial dataframe like a regular R dataframe. 
+```{r}
+locs_sf <- st_as_sf(locs,                              # We specify the dataframe 
+                    coords=c("longitude", "latitude"), # The XY coordinates
+                    crs=4326)                          # And the projection code
+```
+
+Find the elevation of each site
+```{r}
+library(elevatr)
+locs_sf <- get_elev_point(locs_sf, 
+                          src="aws", #Amazon Web Service Terrain Tiles - available globally
+                          z = 12)  # z specifies the zoom level, the lower the value the faster the code runs, but the coarser the elevation values are
+```
+
+Human Development Data
+Let's look at how highway presence around camera trap locations
+```{r}
+#load the package
+library(osmdata)
+
+# First buffer our points by 10km to create an area of interest (aoi)
+aoi <- st_bbox(st_buffer(locs_sf, 10000)) # Units are in meters 
+```
+
+Around each buffer, identify where highways intersect
+```{r}
+highway <- opq(aoi) %>% #using the bounding box
+           add_osm_feature(key="highway") %>% #extract all highway features
+           osmdata_sf()  # convert them into simple features format
+```
+
+
+Now calculate the distance from each camera to the highways
+```{r}
+# Create an index of the nearest object in `highway$osm_lines` to locs_sf
+index <- st_nearest_feature(locs_sf, highway$osm_lines)
+
+# Use that index to ask for the distance to that object
+locs_sf$road_dist_m <- st_distance(locs_sf, highway$osm_lines[index,], 
+                                   by_element=T) # Note `by_element=T` tells st_distance to evaluate things line by line. 
+```
+
+
+##Vegeation Productivity
+
+Load the package
+```{r}
+library(MODISTools)
+#This package allows us to get NDVI information
+```
+
+Provide dataframe with specific column information 
+```{r}
+modis_locs <- locs %>% 
+  select("placename", "longitude", "latitude") %>% 
+  rename(site_name=placename, lat=latitude, lon=longitude)
+```
+
+Run NDVI for each site
+```{r}
+site_ndvi <- mt_batch_subset(product = "MOD13Q1",
+                              df=modis_locs,
+                              band = "250m_16_days_NDVI",
+                              start = "2022-04-20",
+                              end = "2023-06-16",
+                              km_lr = 0,         # Use these options if you want to buffer the value (km left)
+                              km_ab = 0,         # Use these options if you want to buffer the value (km above)
+                              internal = TRUE)
+```
+
+Now simplify it
+```{r}
+#select the information that we want to keep
+ndvi_simple <- site_ndvi %>% 
+  select(site, band, calendar_date, value) %>% 
+  rename(placename=site)
+
+ndvi_simple[1:10, ] %>% 
+  kbl() %>% 
+  scroll_box(height = "300px") %>%
+  kable_paper("striped", full_width = F)
+```
+
+Take the max value per season and then add to the locs_sf dataframe
+```{r}
+#Convert ndvi_simple$clanedar_date to date format
+ndvi_simple$calendar_date<- as.Date(ndvi_simple$calendar_date)
+
+#Subset ndvi_simple by season and take max ndvi per site per season
+#Summer NDVI - 4/20/2022 to 9/1/2022
+tmp_summer<-ndvi_simple %>%      #Take the NDVI layer
+  filter(calendar_date <= "2022-09-01") %>% #filter to subset by season
+  group_by(placename)%>%        # Group observations by the placename
+  summarize(max_ndvi_summer = max(value))  # Take the mean of the values and call the new column `mean_ndvi`
+
+#Fall NDVI - 9/2/2022 to 12/1/2022
+tmp_fall<-ndvi_simple %>%
+  filter(between(calendar_date, as.Date('2022-09-02'), as.Date('2022-12-01'))) %>%
+  group_by(placename)%>%
+  summarize(max_ndvi_fall = max(value))
+
+#Winter NDVI - 12/2/2022 to 3/1/2023
+tmp_winter<-ndvi_simple %>%
+  filter(between(calendar_date, as.Date('2022-12-02'), as.Date('2023-03-01'))) %>%
+  group_by(placename)%>%
+  summarize(max_ndvi_winter = max(value))
+
+#Spring NDVI - 3/2/2023 to 6/16/2023
+tmp_spring<-ndvi_simple %>%
+  filter(between(calendar_date, as.Date('2023-03-02'), as.Date('2023-06-16'))) %>%
+  group_by(placename)%>%
+  summarize(max_ndvi_spring = max(value))
+
+
+# Add the new data to our locations dataframe
+locs_sf <- left_join(locs_sf, tmp_summer)
+locs_sf <- left_join(locs_sf, tmp_fall)
+locs_sf <- left_join(locs_sf, tmp_winter)
+locs_sf <- left_join(locs_sf, tmp_spring)
+#Remove the NDVI column I created
+locs_sf<-locs_sf[,-45]
+
+```
+
+Convert the distance to road covariate and append to locs dataframe
+```{r}
+# Convert columns to numeric
+locs_sf$road_dist_m <- as.numeric(locs_sf$road_dist_m)
+
+# Convert it back to a dataframe
+locs_sf$geometry <- NULL
+
+#join dataframes to make one master dataset
+locs <- left_join(locs, locs_sf)
+
+
+```
+
+
+The last thing we need to do is conver the fish covariate columns into a binary of 0/1's in which 0=no and 1=yes
+```{r}
+#Change the observed salmon presence column. Yes = 1, no = 0.
+locs$observed_salmon_presence<-ifelse(locs$observed_salmon_presence=="yes",1,0)
+
+#Change the recorded salmon presence column. Yes = 1, no = 0.
+locs$recorded_salmon_presence<-ifelse(locs$recorded_salmon_presence=="yes",1,0)
+
+# Export the dataset
+write.csv(locs, paste0("data/processed_data/", locs$project_id[1],"_camera_locations_and_covariates.csv"), row.names=F)
+
+```
+
+
+##Correlations between predictions
+This is a preview of how related our covariates are to each other. This will help me decide which covariates to include in my models.
+```{r Fig1, echo=TRUE, fig.height=10, fig.width=30}
+#load in the data if you are just working on this step. You can ignore this if you have run the whole script (just be sure to change the name of the dataframe to "covariates")
+covariates <- read.csv("data/processed_data/2004250_camera_locations_and_covariates.csv")
+
+library(corrplot) #we will need this package to generate the plot
+
+#Determine which columns are numeric
+num_cols <- unlist(lapply(covariates, is.numeric))
+
+#subset data to just numeric coulmns
+data_num <- covariates[ , num_cols]
+
+#remove project_id, lat, and long columns
+data_num<-data_num[,-c(1:3)]
+
+#remove na values
+data_num[is.na(data_num)] <- 0
+
+# First we need to create a correlation matrix between the different variables of interest
+M <- cor(data_num[])
+
+corrplot(M)
+```
+
+Make a useable plot. Anything greater than 0.7 or less than -0.7 will be eliminated. 
+```{r Fig1, echo=TRUE, fig.height=25, fig.width=50}
+
+
+corrplot(M,                              #The correlation matrix we made
+         method="color",                 # How we want the cells 
+         type="upper",                   # Just show the upper part (it is usually mirrored)
+         order="original",                 # Order the variables using the hclust method
+         addCoef.col = "black",          # Add coefficient of correlation  
+         tl.col="black", tl.srt=90,      # Control the text label color and rotation
+         diag=F,                          # Suppress the diagonal correlations (which are 1 anyway)
+         tl.cex = 5,
+         number.font = 5,
+         cl.ratio = .2
+         
+         )
+
+```
+
+Do the same for the species traits covariates
+```{r}
+#Read in this csv file if you haven't run eveything in this script. 
+species <- read.csv("data/processed_data/2004250_species_list.csv")
+
+#Determine which columns are numeric
+num_sp <- unlist(lapply(species, is.numeric))
+
+#subset data to just numeric coulmns
+sp <- species[ , num_sp]
+
+#remove na values
+sp[is.na(sp)] <- 0
+
+# First we need to create a correlation matrix between the different variables of interest
+S <- cor(sp[])
+
+corrplot(S)
+```
+
+Change the view of the plot so it is useable for us. Anything greater than 0.7 or less than -0.7 will be eliminated.
+```{r Fig1, echo=TRUE, fig.height=25, fig.width=50}
+
+corrplot(S,                              #The correlation matrix we made
+         method="color",                 # How we want the cells 
+         type="upper",                   # Just show the upper part (it is usually mirrored)
+         order="original",                 # Order the variables using the hclust method
+         addCoef.col = "black",          # Add coefficient of correlation  
+         tl.col="black", tl.srt=90,      # Control the text label color and rotation
+         diag=F,                          # Suppress the diagonal correlations (which are 1 anyway)
+         tl.cex = 5,
+         number.font = 5,
+         cl.ratio = .2
+         
+         )
+
+```
+
+Now let's summarize the camera location data to find the average and ranges of each variable, which will be added to my thesis table describing the covariates.
+```{r}
+#Add a Maple Ridge/Squamish column 
+covariates$site<- substr(covariates$placename, 1,1)
+
+#Subset by site location
+Squamish<- filter(covariates, site == "S")
+Maple<- filter(covariates, site == "M")
+
+#Subset by habitat type
+Maple_M<- filter(Maple, habitat_type == "matrix")
+Maple_R<- filter(Maple, habitat_type == "riparian")
+Maple_S<- filter(Maple, habitat_type == "stream")
+Squamish_M<- filter(Squamish, habitat_type == "matrix")
+Squamish_R<- filter(Squamish, habitat_type == "riparian")
+Squamish_S<- filter(Squamish, habitat_type == "stream")
+
+#Subset to just numeric variables - Maple Ridge Matrix
+#Determine which columns are numeric
+Maple_Mnum <- unlist(lapply(Maple_M, is.numeric))
+#subset data to just numeric coulmns
+Maple_Mnum <- Maple_M[ , Maple_Mnum]
+#remove project_id, lat, and long columns
+Maple_Mnum<-Maple_Mnum[,-c(1:3)]
+#remove na values
+Maple_Mnum[is.na(Maple_Mnum)] <- 0
+
+#Subset to just numeric variables - Maple Ridge Riparian
+#Determine which columns are numeric
+Maple_Rnum <- unlist(lapply(Maple_R, is.numeric))
+#subset data to just numeric coulmns
+Maple_Rnum <- Maple_R[ , Maple_Rnum]
+#remove project_id, lat, and long columns
+Maple_Rnum<-Maple_Rnum[,-c(1:3)]
+#remove na values
+Maple_Rnum[is.na(Maple_Rnum)] <- 0
+
+#Subset to just numeric variables - Maple Ridge Stream
+#Determine which columns are numeric
+Maple_Snum <- unlist(lapply(Maple_S, is.numeric))
+#subset data to just numeric coulmns
+Maple_Snum <- Maple_S[ , Maple_Snum]
+#remove project_id, lat, and long columns
+Maple_Snum<-Maple_Snum[,-c(1:3)]
+#remove na values
+Maple_Snum[is.na(Maple_Snum)] <- 0
+
+#Subset to just numeric variables - Squamish Matrix
+#Determine which columns are numeric
+Squamish_Mnum <- unlist(lapply(Squamish_M, is.numeric))
+#subset data to just numeric coulmns
+Squamish_Mnum <- Squamish_M[ , Squamish_Mnum]
+#remove project_id, lat, and long columns
+Squamish_Mnum<-Squamish_Mnum[,-c(1:3)]
+#remove na values
+Squamish_Mnum[is.na(Squamish_Mnum)] <- 0
+
+#Subset to just numeric variables - Squamish Riparian
+#Determine which columns are numeric
+Squamish_Rnum <- unlist(lapply(Squamish_R, is.numeric))
+#subset data to just numeric coulmns
+Squamish_Rnum <- Squamish_R[ , Squamish_Rnum]
+#remove project_id, lat, and long columns
+Squamish_Rnum<-Squamish_Rnum[,-c(1:3)]
+#remove na values
+Squamish_Rnum[is.na(Squamish_Rnum)] <- 0
+
+#Subset to just numeric variables - Squamish Stream
+#Determine which columns are numeric
+Squamish_Snum <- unlist(lapply(Squamish_S, is.numeric))
+#subset data to just numeric coulmns
+Squamish_Snum <- Squamish_S[ , Squamish_Snum]
+#remove project_id, lat, and long columns
+Squamish_Snum<-Squamish_Snum[,-c(1:3)]
+#remove na values
+Squamish_Snum[is.na(Squamish_Snum)] <- 0
+
+
+#Find the mean of each column 
+means<-colMeans(Maple_Mnum) 
+#Find the min of each column
+min<-apply(Maple_Mnum,2,min)
+#Find the max of each column
+max<-apply(Maple_Mnum,2,max)
+#Put together in a dataframe
+MM<-data.frame(means,min,max)
+
+#Find the mean of each column 
+means<-colMeans(Maple_Rnum) 
+#Find the min of each column
+min<-apply(Maple_Rnum,2,min)
+#Find the max of each column
+max<-apply(Maple_Rnum,2,max)
+#Put together in a dataframe
+MR<-data.frame(means,min,max)
+
+#Find the mean of each column 
+means<-colMeans(Maple_Snum) 
+#Find the min of each column
+min<-apply(Maple_Snum,2,min)
+#Find the max of each column
+max<-apply(Maple_Snum,2,max)
+#Put together in a dataframe
+MS<-data.frame(means,min,max)
+
+#Find the mean of each column 
+means<-colMeans(Squamish_Mnum) 
+#Find the min of each column
+min<-apply(Squamish_Mnum,2,min)
+#Find the max of each column
+max<-apply(Squamish_Mnum,2,max)
+#Put together in a dataframe
+SM<-data.frame(means,min,max)
+
+#Find the mean of each column 
+means<-colMeans(Squamish_Rnum) 
+#Find the min of each column
+min<-apply(Squamish_Rnum,2,min)
+#Find the max of each column
+max<-apply(Squamish_Rnum,2,max)
+#Put together in a dataframe
+SR<-data.frame(means,min,max)
+
+#Find the mean of each column 
+means<-colMeans(Squamish_Snum) 
+#Find the min of each column
+min<-apply(Squamish_Snum,2,min)
+#Find the max of each column
+max<-apply(Squamish_Snum,2,max)
+#Put together in a dataframe
+SS<-data.frame(means,min,max)
+
+#Export all dataframes. These will be manually added to the exported final covariates dataframe.
+write.csv(MM, file = "MM.csv")
+write.csv(MR, file = "MR.csv")
+write.csv(MS, file = "MS.csv")
+write.csv(SM, file = "SM.csv")
+write.csv(SR, file = "SR.csv")
+write.csv(SS, file = "SS.csv")
+
+```
+
+Make a summary dataframe for all of the variables not divided by season and site
+```{r}
+#Find the mean of each column 
+means<-colMeans(data_num) 
+#Find the min of each column
+min<-apply(data_num,2,min)
+#Find the max of each column
+max<-apply(data_num,2,max)
+#Put together in a dataframe
+total<-data.frame(means,min,max)
+
+write.csv(total, file = "total.csv")
+```
+
+Let's do the same for the species specific covariates
+```{r}
+#Find the mean of each column
+means<-colMeans(sp) #sp is just the numeric columns of the covariates dataset
+#Find the min of each column
+min<-apply(sp,2,min)
+#Find the max of each column
+max<-apply(sp,2,max)
+#Put together in a dataframe
+sp_cov_summary<-data.frame(means,min,max)
+```
+
+Find the mode for land cover data. 
+```{r}
+#This function was taken from https://www.tutorialspoint.com/r/r_mean_median_mode.htm.
+getmode <- function(v) {
+   uniqv <- unique(v)
+   uniqv[which.max(tabulate(match(v, uniqv)))]
+}
+#summarize land cover data by site and habitat type
+summaryLC<- covariates %>% group_by(site, habitat_type) %>% summarise(
+  LC = getmode(land_cover),
+  LC_smallHR = getmode(land_cover_smallHR),
+  LC_largeHR = getmode(land_cover_largeHR)
+)
+```
+
+Find the mode for stream order
+```{r}
+summaryOrder<- covariates %>% group_by(site, habitat_type) %>% summarise(
+  order = getmode(stream_order),
+)
+```
+
+
+---------------------- END -----------------------------
+

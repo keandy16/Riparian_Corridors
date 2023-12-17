@@ -1,0 +1,278 @@
+---
+title: "Principal Component Analysis"
+output: html_notebook
+author: Kate Andy
+created: June 6, 2023
+---
+
+The purpose of this R Notebook is to run principal component analyses/principal coordinate analyses of various vegetation and habitat characteristic data collected throughout the duration of the Riparian Corridors project. These data will be incorporated into the main covariates dataframe.  
+
+Clear the workspace and set the working directory
+```{r}
+rm(list=ls())
+setwd("/Users/kateandy/Documents/R/Riparian_Corridors")
+```
+
+
+Load the required packages
+```{r}
+library(readr)
+library(vegan)
+library(dplyr)
+library(ggfortify)
+library(ggplot2)
+library(ecodist)
+```
+
+
+Read in datasets - these data come from seasonal field work. 
+```{r}
+quadratCover <- read_csv("PCA_data/quadrat_cover.csv")
+streamQuadratCover<- read_csv("PCA_data/stream_quadrat_cover.csv")
+terrestrialSpecies<- read_csv("PCA_data/total_terrestrial_species_composition.csv")
+treeBiomass<- read_csv("PCA_data/tree_biomass.csv")
+treeDensity<- read_csv("PCA_data/tree_density.csv")
+```
+
+
+
+Run the PCA for the quadrat cover dataset
+```{r}
+#Pull out just summer quadrat data - choosing maximum growing period
+quadratSummer<-filter(quadratCover, season_visit == "Jun-22")
+
+#Summarize so that there is only average quadrat values per site.
+quadratSummergroup<- quadratSummer %>% group_by(site, habitat_type, location) %>% summarise(across(where(is.numeric), list(mean=mean), na.rm=TRUE))
+
+#Remove the replicate number column
+quadratSummergroup<-quadratSummergroup[,-4]
+  
+#Subset data so it is just values for PCA
+quadrat_data <- quadratSummergroup[, 4:16]
+
+#Scale and center all the data
+quadrat_scaled<-scale(quadrat_data, center = TRUE, scale = TRUE)
+
+#Run the PCA
+quadrat_PCA <- princomp(quadrat_scaled, cor = FALSE)
+
+```
+
+Plot the results from the PCA.
+```{r}
+autoplot(quadrat_PCA, data = quadratSummergroup, colour = 'habitat_type', shape = 'location', loadings=TRUE,loadings.label = TRUE, loadings.label.size = 3)
+```
+
+
+Interpret the results
+```{r}
+summary(quadrat_PCA)
+loadings(quadrat_PCA)
+```
+
+Extract quadrat scores for Comp 1 and Comp 2
+```{r}
+#Create a new vector called "Sites"
+Sites<-quadratSummergroup$site 
+
+#Create a vector of the PCA Comp1 scores
+Comp1<-quadrat_PCA$scores[,"Comp.1"]
+
+#Create a vector of the PCA Comp2 scores
+Comp2<- quadrat_PCA$scores[,"Comp.2"]
+
+#Merge the vectors to create a dataframe
+quadratVars<-data.frame(Sites,Comp1,Comp2)
+```
+
+
+Run the PCA for the stream quadrat cover dataset
+```{r}
+#Pull out just summer quadrat data - choosing maximum growing period
+streamQuadratSummer<-filter(streamQuadratCover, season_visit == "22-Jun") #sometimes needs to be "Jun-22" instead of "22-Jun"
+
+#Summarize so that there is only average quadrat values per site.
+streamQuadratSummergroup<- streamQuadratSummer %>% group_by(site, location) %>% summarise(across(where(is.numeric), list(mean=mean), na.rm=TRUE))
+
+#Remove the replicate number column
+streamQuadratSummergroup<-streamQuadratSummergroup[,-3]
+
+#Subset data so it is just values for PCA
+stream_quadrat_data <- streamQuadratSummergroup[, 3:12]
+
+#Scale and center all the data
+stream_quadrat_scaled<-scale(stream_quadrat_data, center = TRUE, scale = TRUE)
+
+#Replace NA values with 0
+stream_quadrat_scaled[is.na(stream_quadrat_scaled)] <- 0
+
+#Run the PCA
+stream_quadrat_PCA <- princomp(stream_quadrat_scaled, cor = FALSE)
+```
+
+Plot the results from the PCA
+```{r}
+autoplot(stream_quadrat_PCA, data = streamQuadratSummergroup, colour = 'location') + geom_text(size = 2, vjust = -1, label = streamQuadratSummergroup$site)
+```
+Interpret the results
+```{r}
+summary(stream_quadrat_PCA)
+loadings(stream_quadrat_PCA)
+```
+
+Extract stream quadrat scores for Comp 1 and Comp 2
+```{r}
+#Create a new vector of the camera trap sites
+Sites<-streamQuadratSummergroup$site
+
+#Create a vector of the PCA Comp1 scores
+Comp1<-stream_quadrat_PCA$scores[,"Comp.1"]
+
+#Create a vector of the PCA Comp2 scores
+Comp2<- stream_quadrat_PCA$scores[,"Comp.2"]
+
+#Merge the vectors to make a dataframe
+streamQuadratVars<-data.frame(Sites,Comp1,Comp2)
+```
+
+
+Run the PCoA for the terrestrial species dataset
+```{r}
+#Subset data so it is just values for PCoA
+terrestrialSpecies_data <- terrestrialSpecies[, 4:54]
+
+#Run the PCoA
+terrestrialSpecies.bray <- vegdist(terrestrialSpecies_data, method = "bray") #creates a dissimilarity matrix
+terrestrial_species_PCoA <- pco(terrestrialSpecies.bray, negvals = "zero", dround = 0) #runs the PCoA
+
+```
+
+Plot the results from the PCoA
+```{r}
+#Extract PCoA1 and PCoA2 vectors
+PCoA1<- terrestrial_species_PCoA$vectors[,1]
+PCoA2<-terrestrial_species_PCoA$vectors[,2]
+
+#Merge into a dataframe to plot
+PCoA<-data.frame(PCoA1,PCoA2)
+
+#Create the plot
+ggplot(PCoA,aes(x= PCoA1, y= PCoA2, color = terrestrialSpecies$habitat_type, shape = terrestrialSpecies$location)) +
+  geom_point()+ 
+  geom_segment(data = loadings,
+                 aes(xend = PCoA1, yend = PCoA2, x = 0, y = 0),
+                 arrow = arrow(type = "closed", length = unit(0.1, "inches"), ends = "both"))
+
+
+
+```
+
+
+
+Interpret the results
+```{r}
+summary(terrestrial_species_PCoA)
+loadings(terrestrial_species_PCoA)
+```
+
+Extract terrestrial species vectors for PCoA 1 and PCoA 2
+```{r}
+#Create a vector of camera trap sites
+Sites<-terrestrialSpecies$site
+
+#Create a vector of the PCoA1 vectors
+PCoA1<- terrestrial_species_PCoA$vectors[,1]
+
+#Create a vector of the PCoA2 vectors
+PCoA2<-terrestrial_species_PCoA$vectors[,2]
+
+#Merge the vectors into a dataframe
+terrestrialVars<-data.frame(Sites,PCoA1,PCoA2)
+```
+
+
+Run the PCA for the tree density dataset
+```{r}
+#Subset data so it is just values for PCA
+treeDensity_data <- treeDensity[, 4:20]
+
+#Scale and center all the data
+tree_density_scaled<-scale(treeDensity_data, center = TRUE, scale = TRUE)
+
+#Run the PCA
+tree_density_PCA <- princomp(tree_density_scaled, cor = FALSE)
+```
+
+Plot the results from the PCA
+```{r}
+autoplot(tree_density_PCA, data = treeDensity, colour = 'habitat_type', shape = 'location')
+```
+Interpret the results
+```{r}
+summary(tree_density_PCA)
+loadings(tree_density_PCA)
+```
+
+Extract density scores for Comp 1 and Comp 2
+```{r}
+Sites<-treeDensity$site
+Comp1<-tree_density_PCA$scores[,"Comp.1"]
+Comp2<- tree_density_PCA$scores[,"Comp.2"]
+densityVars<-data.frame(Sites,Comp1,Comp2)
+```
+
+
+
+Run the PCA for the tree biomass dataset
+```{r}
+#Subset data so it is just values for PCA
+treeBiomass_data <- treeBiomass[, 4:19]
+#Replace NA values with 0
+treeBiomass_data[is.na(treeBiomass_data)] <- 0
+
+#Scale and center all the data
+tree_biomass_scaled<-scale(treeBiomass_data, center = TRUE, scale = TRUE)
+
+#Run the PCA
+tree_biomass_PCA <- princomp(tree_biomass_scaled, cor = FALSE)
+```
+
+Plot the results from the PCA
+```{r}
+autoplot(tree_biomass_PCA, data = treeBiomass, colour = 'habitat_type', shape = 'location')
+```
+Interpret the results
+```{r}
+summary(tree_biomass_PCA)
+loadings(tree_biomass_PCA)
+```
+
+Extract biomass scores for Comp 1 and Comp 2
+```{r}
+#Create a vector of the camera trap sites
+Sites<-treeBiomass$site
+
+#Create a vector of the PCA Comp1 scores
+Comp1<-tree_biomass_PCA$scores[,"Comp.1"]
+
+#Create a vector of the PCA Comp2 scores
+Comp2<- tree_biomass_PCA$scores[,"Comp.2"]
+
+#Merge the vectors to make a dataframe
+biomassVars<-data.frame(Sites,Comp1,Comp2)
+```
+
+
+Export PCA/PCoA variables
+```{r}
+setwd("~/Documents/R/Riparian_Corridors/PCA_data")
+write.csv(biomassVars, file = "biomassVars.csv")
+write.csv(quadratVars, file = "quadratVars.csv")
+write.csv(streamQuadratVars, file = "streamQuadratVars.csv")
+write.csv(terrestrialVars, file = "terrestrialVars.csv")
+```
+
+These data will be incorporated into the main covariates dataframe.
+
+
+----------------------END------------------------------

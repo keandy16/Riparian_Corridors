@@ -1,0 +1,615 @@
+---
+title: "HMSC_final"
+output: html_notebook
+---
+The purpose of this R Script is to generate species detections models. We will generate multi-species habitat use models incorporating environmental covariates and species interactions. 
+
+This script follows the technique developed by Christopher Beirne and the Wildlife Coexistence Lab at the University of British Columbia, and the WildCAM network. I will be following the stepwise process outlined in Chapter 10 of this manuscript: https://wildcolab.github.io/Introduction-to-Camera-Trap-Data-Management-and-Analysis-in-R/habitat-use.html.
+
+Clear the working environment
+```{r}
+rm(list=ls())
+```
+
+Set the working directory
+```{r}
+setwd("/Users/kateandy/Documents/R/Riparian_Corridors")
+```
+
+Load the packages
+```{r}
+# Check you have them and load them
+list.of.packages <- c("kableExtra", "tidyr", "ggplot2", "gridExtra", "lme4", "dplyr", "Hmsc", "jtools", "lubridate", "corrplot", "MuMIn")
+
+new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
+if(length(new.packages)) install.packages(new.packages)
+lapply(list.of.packages, require, character.only = TRUE)
+```
+
+#Set up the data frames for the model
+
+Load the data frames
+```{r}
+
+#species list data
+sp_summary <- read.csv("data/processed_data/2004250_species_list.csv")
+
+#montly observations data
+monthly_obs <- read.csv("data/processed_data/_30min_independent_monthly_observations.csv", header=T)
+
+```
+
+Remove species that have low detections and cannot fit well with the model
+```{r}
+monthly_obs <- monthly_obs[,!names(monthly_obs) %in% c("Red.Fox", "Red.Squirrel", "Puma", "Martes.Species", "Western.Spotted.Skunk", "Long.tailed.Weasel", "Stoat", "Elk", "Carolina.Flying.Squirrel", "American.Beaver", "Striped.Skunk", "Neotamias.Species", "Nutria")]
+
+
+```
+
+
+Remove spaces from sp_summary common names
+```{r}
+sp_summary$common_name<- gsub(" ", ".", sp_summary$common_name)
+
+sp_summary <- sp_summary [(!(sp_summary$common_name == "Red.Fox") & !(sp_summary$common_name == "Red.Squirrel") & !(sp_summary$common_name == "Puma") & !(sp_summary$common_name == "Martes.Species") & !(sp_summary$common_name == "Western.Spotted.Skunk") & !(sp_summary$common_name == "Long-tailed.Weasel") & !(sp_summary$common_name == "Stoat") & !(sp_summary$common_name == "Elk") & !(sp_summary$common_name == "Carolina.Flying.Squirrel") & !(sp_summary$common_name == "American.Beaver") & !(sp_summary$common_name == "Striped.Skunk") & !(sp_summary$common_name == "Neotamias.Species") & !(sp_summary$common_name == "Nutria")),]
+
+
+```
+
+Load the camera locations covariates
+```{r}
+#Load the covariate dataframe
+locs <- read.csv("data/processed_data/2004250_camera_locations_and_covariates.csv", header=T)
+
+# Convert to categorical factors
+locs <- locs %>% 
+            mutate_if(is.character,as.factor)
+
+
+#Standardize  covariates - it helps models coverage and facillitates comparison of effects sizes
+
+library(MuMIn)
+z_locs <- stdize(locs[,-(5:6)])
+
+#join the fish columns back on to z_locs
+z_locs<- left_join(z_locs,
+            locs %>% dplyr::select(placename, observed_salmon_presence, recorded_salmon_presence),
+            by = "placename")
+```
+
+
+#Build the model
+```{r}
+library(Hmsc)
+```
+
+
+Add season column to aggregate by season later 
+
+```{r}
+
+monthly_obs$date<- ym(monthly_obs$date)
+
+monthly_obs$season <- "summer"
+monthly_obs$season[month(monthly_obs$date) %in% c(1,2,3)] <- "winter"
+monthly_obs$season[month(monthly_obs$date) %in% c(10,11,12)] <- "fall"
+monthly_obs$season[month(monthly_obs$date) %in% c(4,5,6)] <- "spring"
+
+
+monthly_obs<- monthly_obs[,c(1,3:17)] #change this to match the number of columns in monthly_obs
+
+monthly_obs[is.na(monthly_obs)]<-0
+
+library(dplyr)
+monthly_obs<-monthly_obs %>%
+  group_by(placename, season) %>%
+  summarise_each(funs(sum))
+
+```
+
+
+Prepare the species detections dataframe. This will be our response variable dataframe in the model.
+```{r}
+#Subset monthly_obs to just species to make matrix
+monthly_obs_sub<-monthly_obs[,c(4:16)] #change the number of columns to match subset column length
+
+#Put the columns in alphabetical order
+new_order = sort(colnames(monthly_obs_sub))
+monthly_obs_sub <- monthly_obs_sub[, new_order]
+
+# Pull the count data into its own matrix
+Y <- as.matrix(monthly_obs_sub)
+
+# Give the row names a useful label, in this case the site_date values 
+# (just in case you want to check things)
+#row.names(Y) <- paste(monthly_obs$placename, monthly_obs$date, sep="_")
+row.names(Y) <- unique(paste(monthly_obs$placename, monthly_obs$season, sep="_"))
+
+#Convert na's to 0 in dataframe
+Y[is.na(Y)]<-0
+
+
+```
+
+
+Prepare the camera trap covariate dataframe.
+```{r}
+
+#join the covariate data to the observation data
+Xdat <- left_join(monthly_obs[c("placename", "season", "days")], z_locs)
+
+# All XData must be numeric or factors, so lets check what we have
+#str(Xdat)
+#Replace NA with 0 in any numeric column
+Xdat<- Xdat %>% mutate(
+    across(where(is.numeric), ~replace_na(.x, 0))
+  )
+
+```
+
+
+
+Transform the species covariate dataframe to be used in the model.
+```{r}
+#Pick out the columns we want from sp_summary
+species<- sp_summary[,c(6,8:22)]
+
+#Make a log-transformed body mass column
+species$log_body<- log(species$mass_g)
+
+```
+
+Standardize the species dataframe reformat. 
+```{r}
+#standardize
+z_species <- stdize(species)
+
+
+#order the common name column alphabetically
+z_species<- z_species[order(z_species$common_name), ]
+
+#make sure that all spaces are changed to "." instead
+z_species$common_name <- gsub("'", ".", z_species$common_name)
+z_species$common_name <- gsub("-", ".", z_species$common_name)
+
+#Change rownames to species
+row.names(z_species) <- paste(z_species$common_name)
+
+#Remove common_name column
+z_species<-z_species[,2:17]
+
+#Convert na's to 0 in dataframe
+z_species[is.na(z_species)]<-0
+
+```
+
+
+
+Set up the Bayesian framework
+```{r}
+nChains   = 3       # How many total repeats to run
+thin      = 300       # How often to thin the samples 
+samples   = 1000     # How many samples to take   
+transient = 25000 # How long should the "warm up" be
+verbose   = T       # Give reports on model progress
+
+
+```
+
+
+
+Set up random effects
+```{r}
+#Make a Site column
+library(stringr) #we will need to load this package first
+Xdat$Site = substr(Xdat$placename,3,6) #extracts the site name from placename
+#Add a column for which city it belongs to. M = Maple Ridge. S = Squamish.
+Xdat$City <- substr(Xdat$placename,1,1)
+
+# make all character variables factors
+Xdat <- Xdat %>% 
+            mutate_if(is.character,as.factor)
+
+
+# Add a site-level and city-level random effects (for the co-variances)
+studyDesign = data.frame(station = as.factor(Xdat$Site), city = as.factor(Xdat$City))
+
+
+#Assign the levels of the random effects
+rL1 = HmscRandomLevel(units = studyDesign$Site)
+rL2 = HmscRandomLevel(units = studyDesign$City)
+
+```
+
+Specify the model - mixed variables
+The stream channel morphology model- remove "z.road_dist_m" from the mixed variables model
+The development intensity model- remove "z.height_streambank_summer" from the mixed variables model
+```{r}
+# Model specification
+mod <- Hmsc(Y = Y, 
+            XData = Xdat[,c( "z.avg_ndvi", "z.elevation", "z.road_dist_m", "z.height_streambank_summer", "recorded_salmon_presence", "season", "habitat_type", "days", "z.average_viewshed")], 
+            XFormula = ~ z.avg_ndvi + z.elevation +  z.road_dist_m + z.height_streambank_summer + recorded_salmon_presence + season + habitat_type + days + z.average_viewshed,
+            TrData = z_species,
+            TrFormula = ~z.log_body + z.diet_vfish + z.diet_seed + z.diet_plant0,
+            studyDesign = studyDesign, 
+            ranLevels = list(station = rL1, city = rL2),
+            distr="poisson")
+
+
+```
+
+
+Fit the model
+```{r}
+out <-  sampleMcmc(mod, thin = thin, samples = samples, transient = transient,
+               nChains = nChains, verbose = verbose)
+
+save(out,file="rmv_sp_traits_env.Rdata")
+
+```
+
+----------------------- follow these steps after you have fit the model ----------------------------
+
+
+#Model fit examination
+```{r}
+load("rmv_sp_traits_env.Rdata")
+preds<- computePredictedValues(out,expected = FALSE)#computePredictedValues(out, expected = FALSE) to get Tjur's R2 and AUC
+MF = evaluateModelFit(hM = out, predY = preds)
+MF
+```
+Find the mean RMSE and SR2 values
+```{r}
+mean(MF$RMSE)
+mean(MF$SR2)
+```
+
+```{r}
+SR2<- as.data.frame(MF)
+SR2$Taxonomic.Group<-unique(paste(out$spNames))
+
+
+```
+
+
+Stream channel morphology model results
+```{r}
+load("sp_traits_env_stream.Rdata")
+preds<- computePredictedValues(out,expected = FALSE)#computePredictedValues(out, expected = FALSE) to get Tjur's R2 and AUC
+MF = evaluateModelFit(hM = out, predY = preds)
+MF
+```
+
+Mean RMSE and SR2
+```{r}
+mean(MF$RMSE)
+mean(MF$SR2)
+```
+
+Development Intensity model results
+```{r}
+load("sp_traits_env_human.Rdata")
+preds<- computePredictedValues(out,expected = FALSE)#computePredictedValues(out, expected = FALSE) to get Tjur's R2 and AUC
+MF = evaluateModelFit(hM = out, predY = preds)
+MF
+```
+
+Mean RMSE and SR2
+```{r}
+mean(MF$RMSE)
+mean(MF$SR2)
+```
+
+
+
+
+Plot the SR2 to see how well the model explained for each species
+```{r}
+
+#put the values in descending order
+SR2 <- SR2[order(-SR2$SR2), ]
+
+#Now plot the results in a vertical bar chart
+library(ggplot2)
+
+ggplot(SR2, aes(x = reorder(Taxonomic.Group, SR2), y = SR2)) +
+  geom_bar(stat = "identity", fill = "#808000") +
+  coord_flip() +  # Flip the coordinates to create a vertical bar chart
+  labs(x = "Taxonomic Group", y = "Pseudo-R2") +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),panel.background = element_blank(), axis.line = element_line(colour = "black"))
+
+
+```
+
+
+Plot the variance
+```{r}
+head(out$X)
+```
+
+Variance figure
+```{r}
+out$spNames <- gsub('\\.', ' ', out$spNames)
+out$spNames <- gsub("Douglas s Squirrel", "Douglas's Squirrel", out$spNames)
+out$spNames <- gsub("Western Gray Squirrel", "Gray Squirrels", out$spNames)
+out$rLNames<- gsub("station", "Site", out$rLNames)
+out$rLNames<- gsub("city", "Study Location", out$rLNames)
+
+
+plotVariancePartitioning <- function(hM, VP, cols = NULL, main = "Variance Partitioning", ...) {
+   ng <- dim(VP$vals)[1]
+   if (is.null(cols)) {
+      cols <- heat.colors(ng, alpha = 1)
+   }
+   leg <- VP$groupnames
+   for (r in seq_len(hM$nr)) {
+      leg <- c(leg, paste("Random: ", hM$rLNames[r], sep = ""))
+   }
+   means <- round(100 * rowMeans(VP$vals), 1)
+   for (i in 1:ng) {
+      leg[i] <- paste(leg[i], " (mean = ", toString(means[i]), ")", sep = "")
+   }
+
+   # Create the barplot with thinner bars
+   barplot(VP$vals, xlab = "", ylab = "Variance proportion", las = 2, cex.axis = 1, cex.names = 0.5,
+          col = cols, width = 0.6, names.arg = hM$spNames, xlim = c(0,15))
+   legend_x <- "right"  # Position the legend to the right
+legend_y <- NULL  # Adjust the y-position as needed
+legend("topright", legend = leg, fill = cols, x.intersp = 0.8, cex = 0.6, xpd = FALSE)
+
+
+ mtext("Taxonomic Group", side = 1, line = 6, cex = 1, at = 4)
+
+  
+}
+
+
+
+
+VP = computeVariancePartitioning(out, group = c(1,2,3,4,5,6,6,6,7,7,8,8), groupnames = c("Maximum NDVI","Elevation", "Development Intensity", "Channel Morphology", "Salmon Presence","Camera", "Habitat Type", "Season"))
+par(mar = c(6, 3, 2, 5)+1)
+plotVariancePartitioning(out, VP = VP, cols = c("#800000", "#e6194B", "#fabed4", "#ffd8b1", "#f58231", "#9A6324", "#808000", "#ffe119", "#669999", "#336666"))
+
+
+```
+
+
+Create 95% credible intervals for variable selection within model. These should not cross 0. 
+```{r}
+mpost2 = convertToCodaObject(out)
+interval<-round(summary(mpost2$Beta[[1]], quantiles = c(0.05, 0.5, 0.95))[[2]],2)
+write.csv(interval, file= "interval_final.csv")
+```
+
+
+#Plot the results
+
+Create a summary plot which shows the effects of covariates on mammal detections
+```{r}
+#Fix up the names of the covariates
+out$covNames <- gsub('z.', '', out$covNames)
+out$covNames <- gsub("elevation", "Elevation", out$covNames)
+out$covNames <- gsub("avg_ndvi", "Maximum NDVI", out$covNames)
+out$covNames <- gsub("road_dist_m", "Road Distance", out$covNames)
+out$covNames <- gsub("height_streambank_summer", "Summer Streambank Height", out$covNames)
+out$covNames <- gsub("recorded_salmon_presence", "Salmon Presence", out$covNames)
+out$covNames <- gsub("seasonspring", "Spring", out$covNames)
+out$covNames <- gsub("seasonsummer", "Summer", out$covNames)
+out$covNames <- gsub("seasonwinter", "Winter", out$covNames)
+out$covNames <- gsub("habitat_typeriparian", "Riparian Habitat", out$covNames)
+out$covNames <- gsub("habitat_typestream", "Stream Habitat", out$covNames)
+out$covNames <- gsub("days", "Sampling effort (days)", out$covNames)
+out$covNames <- gsub("average_viewshed", "Average Viewshed", out$covNames)
+
+```
+
+
+
+Plot species and environmental covariates
+```{r}
+postBeta = getPostEstimate(out, parName = "Beta")
+par(mar=c(6,9,2,2))
+plotBeta(out, post = postBeta, param = "Sign", supportLevel = 0.95, cex = c(0.7, 
+        0.7, 0.8), mgp=c(0,1,0),  spNamesNumbers = c(T,F), covNamesNumbers = c(T, F), colors = colorRampPalette(c("#800000", "white", "#e6194B")))
+
+
+
+```
+
+
+Plot the species traits now
+```{r}
+plotGamma=function(hM, post, param = "Support", trOrder="Original",
+  trVector= NULL, covOrder="Original", covVector=NULL, trNamesNumbers=c(TRUE,FALSE),
+  covNamesNumbers=c(TRUE,FALSE), supportLevel=.9, main = NULL, cex=c(.6,.6,.8),
+  colors=colorRampPalette(c("blue","white","red")), colorLevels = NULL,
+  mar=c(8,9,2,0),
+  smallplot=NULL, bigplot=NULL, newplot=TRUE){
+
+   if(is.null(colorLevels)){
+      if(param=="Sign"){
+         colorLevels=3} else {
+            colorLevels=200
+         }
+   }
+  switch(class(hM$X)[1L],
+         matrix = {
+           ncolsX = ncol(hM$X)
+         },
+         list = {
+           ncolsX = ncol(hM$X[[1]])
+         }
+  )
+
+   covNames = character(hM$nc)
+   for (i in 1:hM$nc) {
+      sep = ""
+      if (covNamesNumbers[1]) {
+         covNames[i] = paste(covNames[i], hM$covNames[i], sep = sep)
+         sep = " "
+      }
+      if (covNamesNumbers[2]) {
+         covNames[i] = paste(covNames[i], sprintf("(C%d)",
+            i), sep = sep)
+      }
+   }
+   trNames = character(hM$nt)
+   for (i in 1:hM$nt) {
+      sep = ""
+      if (trNamesNumbers[1]) {
+         trNames[i] = paste(trNames[i], hM$trNames[i], sep = sep)
+         sep = " "
+      }
+      if (trNamesNumbers[2]) {
+         trNames[i] = paste(trNames[i], sprintf("(T%d)", i),
+            sep = sep)
+      }
+   }
+
+
+   if(covOrder=="Vector"){covorder=covVector}
+   if(covOrder=="Original"){covorder=1:ncolsX}
+
+   if(trOrder=="Vector"){trorder=trVector}
+   if(trOrder=="Original"){trorder=1:ncol(hM$Tr)}
+
+
+   mgamma=post$mean
+   gammaP=post$support
+
+   if(param=="Sign"){
+      toPlot = sign(mgamma)
+      toPlot = toPlot * ((gammaP>supportLevel) + (gammaP<(1-supportLevel))>0)
+      gammaMat = matrix(toPlot, nrow=ncolsX, ncol=ncol(hM$Tr))
+   }
+   if(param=="Mean"){
+      toPlot = mgamma
+      toPlot = toPlot * ((gammaP>supportLevel) + (gammaP<(1-supportLevel))>0)
+      gammaMat = matrix(toPlot, nrow=ncolsX, ncol=ncol(hM$Tr))
+   }
+   else{
+      if(param=="Support"){
+         toPlot = 2*gammaP-1
+         toPlot = toPlot * ((gammaP>supportLevel) + (gammaP<(1-supportLevel))>0)
+         gammaMat = matrix(toPlot, nrow=ncolsX, ncol=ncol(hM$Tr))
+      }}
+
+   rownames(gammaMat) = covNames
+   colnames(gammaMat) = trNames
+   X = gammaMat[covorder,trorder]
+
+   old.par = par(no.readonly = TRUE)
+   colors = colors(colorLevels)
+
+   START=0
+   END=.65
+   ADJy=1/(ncol(X)*2)
+   ADJx=1/(nrow(X)*4)
+
+   if(newplot){
+      par(fig = c(0,1,0,1),  mar = mar)
+   } else {
+      par(old.par, mar=mar)
+   }
+
+   plot.new()
+    axis(1, at = seq(START+ADJx, END-ADJx,
+                    by = ((END-ADJx) - (START+ADJx))/(nrow(X) - 1)),
+         labels = FALSE)
+   axis(2, at = seq(ADJy, 1-ADJy, length.out=ncol(X)), labels = FALSE)
+
+   text(x = seq(START+ADJx, END-ADJx, by = ((END-ADJx) - (START+ADJx))/(nrow(X) - 1)), par("usr")[3] - 0.05, srt = 90, adj = 1,cex=cex[2],
+      labels = covNames[covorder], xpd = TRUE)
+   text(y = seq(ADJy, 1-ADJy, length.out=ncol(X)), par("usr")[3] - 0.05, srt = 0, adj = 1,cex = cex[1],
+      labels = trNames[trorder], xpd = TRUE)
+
+   if(all(is.na(X)) || sum(abs(X))==0){
+      warning("nothing to plot at this level of posterior support")
+      zlim = c(-1,1)
+   } else{
+      zlim = c(-max(abs(range(X))),max(abs(range(X))))
+   }
+
+
+   image.plot(x = seq(START+ADJx, END-ADJx, by = ((END-ADJx) - (START+ADJx))/(nrow(X) - 1)),
+      y = seq(ADJy, 1-ADJy, length.out = ncol(X)),
+      z = X, add = TRUE, nlevel = colorLevels,
+      legend.width = 2, legend.mar = NULL,
+      legend.cex = cex,
+      axis.args=if(param=="Sign")
+      {list(labels=c("+","0","-"),at=c(1,0,-1),cex.axis=cex[3],mgp=c(3,2,0),hadj=1)
+      } else {
+         list(cex.axis=cex[3],mgp=c(3,2,0),hadj=1)
+      },
+      graphics.reset = TRUE, horizontal = FALSE, bigplot = bigplot, smallplot = smallplot,
+      legend.only = FALSE, col = colors,
+      lab.breaks = NULL, zlim = zlim)
+
+   if (!is.null(main))
+      title(main = main)
+
+   if(newplot){
+      par(old.par)
+   }
+}
+```
+
+
+Plot the species traits and environmental predictor variables
+```{r}
+out$trNames <- gsub('z.', '', out$trNames)
+out$trNames <- gsub("log_body", "Log-transformed Body Mass", out$trNames)
+out$trNames <- gsub("diet_vfish", "Fish Diet", out$trNames)
+out$trNames <- gsub("diet_seed", "Seed Diet", out$trNames)
+out$trNames <- gsub("diet_plant0", "Plant Diet", out$trNames)
+
+
+postGamma = getPostEstimate(out, parName = "Gamma")
+
+par(mar=c(7,11,2.5,0))
+plotGamma(out, post = postGamma, param = "Sign",  supportLevel = 0.95,  colors = colorRampPalette(c("#800000", "white", "#e6194B")))
+
+```
+
+Create a plot which shows the interaction effect between species.
+```{r}
+OmegaCor = computeAssociations(out)
+
+supportLevel = 0.0
+
+toPlot = ((OmegaCor[[2]]$support>supportLevel)
++ (OmegaCor[[2]]$support<(1-supportLevel))>0)*OmegaCor[[2]]$mean #change all the 1s to 2s for city random effect
+
+
+corrplot(toPlot, 
+         method = "color",
+         type="upper",
+         order = "FPC",
+        colors = colorRampPalette(c("#800000", "white", "#e6194B"))(200),
+        #title = paste("Random Effect Level:", 
+                      #mod$rLNames[1]), mar=c(0,0,1,0), #change to mod$rLNames[1] for station and mod$rlNames[2] for city
+        tl.col="black",
+        tl.cex = 0.5,
+         number.font = 0.5,
+         cl.ratio = .2)
+
+#median(toPlot)
+#sd(toPlot)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

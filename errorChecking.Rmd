@@ -1,0 +1,950 @@
+---
+title: "Error Checking of Data"
+output: html_notebook
+author: Katherine Andy
+---
+
+The purpose of this R Notebook is to examine my data that has been exported from Wildlife Insights (https://wildlifeinsights.org) and determine that all the data look appropriate and that there were no data entry errors. 
+
+This script follows the technique developed by Christopher Beirne and the Wildlife Coexistence Lab at the University of British Columbia, and the WildCAM network. I will be following the stepwise process outlined in Chapter 5 and 6 of this manuscript: https://wildcolab.github.io/Introduction-to-Camera-Trap-Data-Management-and-Analysis-in-R/index.html. 
+
+This script will organize the dates, check the date ranges, match the date ranges with wildlife observations, and map the study sites. Once the data have been cleaned of errors, I will pull in taxonomic information for each observation, condense my dataset down to a single observation per event, separate photo independence, create a species matrix, and save all outputs at varying time scales. 
+
+#Initialize our Workspace
+
+First, let's clear the environment
+```{r}
+rm(list=ls())
+```
+
+Next, upload the functions 
+```{r}
+#Create a list of the functions needed for this script
+list.of.packages <- c(
+  "leaflet",       # creates interactive maps
+  "plotly",        # creates interactive plots   
+  "kableExtra",    # Creates interactive tables 
+  "tidyr",         # A package for data manipulation
+  "dplyr",         # A package for data manipulation
+  "viridis",       # Generates colors for plots  
+  "corrplot",      # Plots pairwise correlations
+  "lubridate",     # Easy manipulation of date objects
+  "taxize",        # Package to check taxonomy 
+  "sf")            # Package for spatial data analysis 
+
+# Check you have them in your library
+new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
+# load them
+if(length(new.packages)) install.packages(new.packages,repos = "http://cran.us.r-project.org")
+lapply(list.of.packages, require, character.only = TRUE)
+
+```
+
+Load the data
+```{r}
+#These data come from the output from Wildlife Insights
+pro <- read.csv("~/Documents/R/Riparian_Corridors/data/projects.csv", header=T)
+img <- read.csv("~/Documents/R/Riparian_Corridors/data/images.csv", header=T)
+cam <- read.csv("~/Documents/R/Riparian_Corridors/data/cameras.csv", header=T)
+
+#This input comes from a manually generated list of the deployments, since I set up Wildife Insights differently than Chris. 
+dep <- read.csv("~/Documents/R/Riparian_Corridors/data/deployments.csv", header=T)
+
+```
+
+
+#Formatting Dates and Times
+
+Convert the start and end deployment dates into date format
+```{r}
+# start dates
+dep$start_date <- as.Date(dep$start_date, "%m/%d/%y") #May need to change the format if the data are ever entered differently.
+dep$start_date <- ymd(dep$start_date) 
+# end dates
+dep$end_date <- as.Date(dep$end_date, "%m/%d/%y")
+dep$end_date   <- ymd(dep$end_date)
+```
+
+Create a new column that shows the number of days during the deployment
+```{r}
+dep$days <- interval(dep$start_date, dep$end_date)/ddays(1)
+```
+
+Convert the img$timestamp column into a workable format using lubridate. 
+```{r}
+img$timestamp <- ymd_hms(img$timestamp)
+```
+
+
+Check for abnormalities
+```{r}
+#Look at the range of the data - this is for the classifications, not deployment
+range(img$timestamp)
+
+#Check for NAs. If it says false, then there are no NA values.
+table(is.na(img$timestamp))
+```
+
+
+#Basic Camera Trap Summaries
+
+Check the number of camera trap locations
+```{r}
+# Count the number of camera locations
+paste(length(unique(dep$placename)), "locations"); paste(length(unique(dep$deployment_id2)), "deployments");paste(nrow(img), "image labels"); paste(nrow(img[img$is_blank == TRUE,]), "blanks")
+```
+
+Make a leaflet map of all our camera trap locations
+```{r}
+# First, set a single categorical variable of interest from station covariates for summary graphs. If you do not have an appropriate category use "project_id".
+category <- "feature_type"
+
+# We first convert this category to a factor with discrete levels
+dep[,category] <- factor(dep[,category])
+# then use the turbo() function to assign each level a color
+col.cat <- turbo(length(levels(dep[,category])))
+# then we apply it to the dataframe
+dep$colours <- col.cat[dep[,category]]
+
+#create the leaflet map
+m <- leaflet() %>%
+  addProviderTiles(providers$Esri.WorldImagery, group="Satellite") %>%  
+  addTiles(group="Base") %>%     # Include a basemap option too
+  addCircleMarkers(lng=dep$longitude, lat=dep$latitude,
+                   # Co lour the markers depending on the 'feature type'
+                   color=dep$colours,
+                   # Add a popup of the placename and feature_type together 
+                   popup=paste(dep$placename, dep[,category])) %>%
+  
+  # Add a legend explaining what is going on
+  addLegend("topleft", colors = col.cat,  labels = levels(dep[,category]),
+                   title = category,
+                   labFormat = labelFormat(prefix = "$"),
+                   opacity = 1) %>%
+  
+  # add a layer control box to toggle between the layers
+  addLayersControl(
+                    baseGroups = c("Satellite", "Base"))
+
+#plot the leaflet map
+m
+```
+
+
+Check for duplicate camera trap entries
+```{r}
+# create a list of all the non-duplicated placenames
+camera_locs <- dep %>% 
+  dplyr::select(placename, latitude, longitude) %>% 
+  unique() %>% # remove duplicated rows (rows where the placename and coordinates match)
+  st_as_sf(coords = c("longitude", "latitude"), crs = "+proj=longlat") # Convert to `sf` format
+
+#Check that no place names are duplicated
+camera_locs[duplicated(camera_locs$placename)==T,]
+```
+
+If no duplicates, continue on to the next step or data organization. This calculates the distance between each camera and creates a matrix of the results. 
+```{r}
+# distance matrix for all cameras
+camera_dist <- st_distance(camera_locs) %>% 
+                  as.dist() %>% 
+                  usedist::dist_setNames(as.character(camera_locs$placename)) %>% 
+                  as.matrix()
+
+# convert to pairwise list
+camera_dist_list <- t(combn(colnames(camera_dist), 2))
+camera_dist_list <- data.frame(camera_dist_list, dist = camera_dist[camera_dist_list]) %>% 
+                          arrange(dist) # sort descending
+
+# Duplicate and flip the stations so each one is represented on the left hand side
+camera_dist_list <- rbind(camera_dist_list, camera_dist_list[,c(2,1,3)])
+
+#remove duplicates
+camera_dist_list<-camera_dist_list[!duplicated(camera_dist_list),]
+
+
+write.csv(camera_dist, file = "camera_dist.csv")
+write.csv(camera_dist_list, file = "camera_dist_list.csv") #In excel, remove rows which have distance from different sites. Then average distance between cameras within each site.
+```
+
+Summary table of the results.
+```{r}
+summary(camera_dist_list$dist)
+```
+
+
+Check if all images have a deployment associated with them.
+```{r}
+#Change the name of the deployment_id column to begin to correct for the error I made when I set up Wildlife Insights. Converting this column name will allow me to merge the deployments and img dataframes. 
+img$deployment_id1<-img$deployment_id
+img<-img[,-2] #We don't need the old column anymore
+
+#if the img dataframe doesn't have placenames attached to it, use this code
+img<- left_join(img,
+            dep %>% dplyr::select(deployment_id1, placename),
+            by = "deployment_id1")
+
+#Hooge Stream and Matrix  had two deployment IDs because we had to move cameras substantially within the site. This code assigns a specific placename to images before the date we moved it and then a different one after the date we moved it.
+
+#Hooge Stream 
+img$placename[img$deployment_id1 == "Hooge Stream" & img$timestamp <= "2022-06-16"] <- "M_HOOG_S1"
+img$placename[img$deployment_id1 == "Hooge Stream" & img$timestamp > "2022-06-16"] <- "M_HOOG_S2"
+
+#Hooge Matrix
+img$placename[img$deployment_id1 == "Hooge Matrix" & img$timestamp <= "2022-05-31"] <- "M_HOOG_M1"
+img$placename[img$deployment_id1 == "Hooge Matrix" & img$timestamp > "2022-05-31"] <- "M_HOOG_M2"
+
+#Remove the duplicates from the merge
+img<-img[!duplicated(img),]
+
+#Add deployment_id2 to img dataframe
+img<-img %>%
+  left_join(dep, by = join_by(placename, between(timestamp, 
+                                          start_date,
+                                          end_date)))
+#We can use this code to check if there are any duplicates to be manually fixed. Sometimes there was user error from Wildlife Insights. 
+img$image_id[duplicated(img$image_id)]
+
+# check all check the placenames in images are represented in deployments
+# This code returns TRUE if it is and FALSE if it isn't. We can then summarize this with table()
+table(unique(img$placename) %in% unique(dep$placename))
+```
+
+
+#Feature Type Plot
+```{r}
+#This plot will generate a plot version of the map above. For this study, this plot isn't as useful as the interactive map. The feature types are "matrix", "riparian", and "stream".  
+library(plotly)
+fig <- plot_ly(data = dep,                    
+               x = ~longitude, y = ~latitude,
+               color=~feature_type,              # We can specify color categories
+               type="scatter",
+               marker=list(size=15))             # the default size is 10           
+fig
+```
+
+
+
+#Camera Activity Plot
+```{r}
+#This will generate a plot that shows when the cameras are active. The solid black lines indicates when the camera was active. The black dots indicate the break between deployment periods (either when the cameras were visited during periods of field work or when the camera viewshed was obstructed). The white space on the plot is when the camera was "not active" (either when the camera was not running, or the viewshed was obstructed by wildlife, vegetation, or severe camera position changes).
+
+#This plot should reveal any data entry issues, namely if the dates of the deployments are incorrect. Since the deployments data sheet was manually generated, it is important to check that there are no issues here. 
+
+# Call the plot
+p <- plot_ly()
+
+# We want a separate row for each 'placename' - so lets turn it into a factor
+dep$placename <- as.factor(dep$placename)
+
+# loop through each place name
+for(i in seq_along(levels(dep$placename)))
+  {
+      #Subset the data to just that placename
+      tmp <- dep[dep$placename==levels(dep$placename)[i],]
+      # Order by date
+      tmp <- tmp[order(tmp$start_date),]
+      # Loop through each deployment at that placename
+      for(j in 1:nrow(tmp))
+      {
+        # Add a line to 'p'
+        p <- add_trace(p, 
+                       #Use the start and end date as x coordinates
+                       x = c(tmp$start_date[j], tmp$end_date[j]), 
+                       #Use the counter for the y coordinates
+                       y = c(i,i), 
+                       # State the type of chart
+                       type="scatter",
+                       # make a line that also has points
+                       mode = "lines+markers", 
+                       # Add the deployment ID as hover text
+                       hovertext=tmp$deployment_id[j], 
+                       # Color it all black
+                       color=I("black"), 
+                       # Suppress the legend
+                       showlegend = FALSE)
+      }
+      
+  }
+# Add a categorical y axis
+ p <- p %>%   layout(yaxis = list(
+
+      ticktext = as.list(levels(dep$placename)), 
+
+      tickvals = as.list(1:length(levels(dep$placename))),
+
+      tickmode = "array"))
+
+#plot the figure
+p
+```
+
+
+#Detection Check 
+```{r}
+#Now it is time to overlay the image data onto the deployments figure above. The graph should look just like the one above, with the black lines showing when the camera was active within a given deployment period, but there is the addition of red dots which show when an image was taken. Any dots that show up in the white space of the plot should not be included in the study as they are outside when the camera was accepted as active. 
+
+# Make a separate plot for each camera 
+# To do this make a plot dataframe
+tmp <- data.frame("deployment_id2"=unique(dep$deployment_id2), "plot_group"=ceiling(1:length(unique(dep$deployment_id2))/20))
+
+dep_tmp <- left_join(dep,tmp, by="deployment_id2")
+
+for(i in 1:max(dep_tmp$plot_group))
+{  
+  # Call the plot
+  p <- plot_ly() 
+  
+  #Subset the data to just that placename
+  tmp <- dep_tmp[dep_tmp$plot_group==i,]
+  # Order by placename 
+  tmp <- tmp[order(tmp$placename),]
+  
+ 
+ # Loop through each deployment at that placename
+  for(j in 1:nrow(tmp))
+    {
+        #Subset the image data
+        tmp_img <- img[img$deployment_id2==tmp$deployment_id2[j],]
+        
+        if(nrow(tmp_img)>0)
+        {
+         
+          p <- add_trace(p, 
+                       #Use the start and end date as x coordinates
+                       x = c(tmp_img$timestamp), 
+                       #Use the counter for the y coordinates
+                       y = rep(j, nrow(tmp_img)), 
+                       # State the type of chart
+                       type="scatter",
+                       # make a line that also has points
+                       mode = "markers", 
+                       # Add the deployment ID as hover text
+                       hovertext=paste(tmp_img$genus,tmp_img$species), 
+                       # Color it all black
+                       marker = list(color = "red"), 
+                       # Suppress the legend
+                       showlegend = FALSE)
+        }
+        
+       # Add a line to 'p'
+        p <- add_trace(p, 
+                       #Use the start and end date as x coordinates
+                       x = c(tmp$start_date[j], tmp$end_date[j]), 
+                       #Use the counter for the y coordinates
+                       y = c(j,j), 
+                       # State the type of chart
+                       type="scatter",
+                       # make a line that also has points
+                       mode = "lines", 
+                       # Add the deployment ID as hover text
+                       hovertext=tmp$deployment_id2[j], 
+                       # Color it all black
+                       color=I("black"), 
+                       # Suppress the legend
+                       showlegend = FALSE)
+      }
+  # Add custom y axis labels  
+  p <- p %>%   layout(yaxis = list(
+
+      ticktext = as.list(tmp$deployment_id2), 
+
+      tickvals = as.list(1:nrow(tmp)),
+
+      tickmode = "array"))
+  
+  print(p)
+      
+  
+} 
+```
+
+
+#Taxonomy Check
+```{r}
+#This section gives us information about the different taxa found in the images. We can use this later to generate a species summary list for the paper. 
+
+# First define vector of the headings you want to see (we will use this trick a lot later on)
+taxonomy_headings <- c("class", "order", "family", "genus", "species", "common_name")
+
+# Subset the image data to just those columns
+tmp<- img[,colnames(img)%in% taxonomy_headings]
+# Remove duplicates
+tmp <- tmp[duplicated(tmp)==F,]
+
+# Create an ordered species list
+sp_list  <- tmp[order(tmp$class, tmp$order, tmp$family, tmp$genus, tmp$species),]
+
+# Create a column to the species list with genus and species pasted together
+sp_list$sp <- paste(sp_list$genus, sp_list$species, sep=".")
+
+# View the species list using kableExtra
+sp_list %>%
+  kbl(row.names=F) %>%
+  kable_styling(full_width = T) %>% 
+  kableExtra::scroll_box(width = "100%", height = "250px")
+
+#Export the species list
+write.csv(sp_list, file = "sp_list.csv")
+```
+
+Next, update the common name list in the img dataframe - Modified this step because the original code adds more rows than necessary because we don't have genus and species for all IDs. The modified code is the left join instead of all the extra code. This adds "sp" to the table without duplicating. 
+```{r}
+# We do a 'left_join' to add an sp column to the img dataframe - genus and species are pasted together here
+img<- left_join(img,
+            sp_list %>% dplyr::select(common_name, sp),
+            by = "common_name")
+```
+
+```{r}
+# Remove observations without animals detected, where we don't know the species, and non-mammals
+ img <- img %>% filter(is_blank==0,                # Remove the blanks
+                          is.na(img$species)==FALSE, # Remove classifications which don't have species 
+                          class=="Mammalia",          # Subset to mammals
+                          species!="sapiens")         # Subset to anything that isn't human
+
+#Adjust the common names so it is standard and understandable for figures/tables
+img$common_name <- sub('Brown Rat','Rodentia',img$common_name)
+img$common_name <- sub('Cervidae Family','Mule Deer',img$common_name)
+img$common_name <- sub('Cricetidae Family','Rodentia',img$common_name)
+img$common_name <- sub('Eastern Gray Squirrel','Western Gray Squirrel',img$common_name)
+img$common_name <- sub('House Mouse','Rodentia',img$common_name)
+img$common_name <- sub('House Rat','Rodentia',img$common_name)
+img$common_name <- sub('Pacific Marten','Martes Species',img$common_name)
+img$common_name <- sub('Mouse Species','Rodentia',img$common_name)
+img$common_name <- sub('Muridae Family','Rodentia',img$common_name)
+img$common_name <- sub("Townsend's Chipmunk","Neotamias Species",img$common_name)
+img$common_name <- sub('Snowshoe Hare','Rabbit and Hare Family',img$common_name)
+img$common_name <- sub('Sciuridae Family','Western Gray Squirrel',img$common_name)
+img$common_name <- sub('Vole Species','Rodentia',img$common_name)
+img$common_name <- sub('Woodrat or Rat Species','Rodentia',img$common_name)
+img$common_name <- sub('Woodrat or Rat or Mouse Species	','Rodentia',img$common_name)
+img$common_name <- sub('Woodrat or Rat or Rodentia','Rodentia',img$common_name)
+img$common_name <- sub('Lagomorpha Order','Rabbit and Hare Family',img$common_name)
+img$common_name <- sub('Lepus Species','Rabbit and Hare Family',img$common_name)
+img$common_name <- sub('Canine Family','Coyote',img$common_name)
+img$common_name <- sub('Rodentiaia','Rodentia',img$common_name)
+img$common_name <- sub('Rodentia','Rodent',img$common_name) #This needs to come last to match the common name list
+
+#remove extra taxa that we didn't have enough confidence in to include in the analysis
+remove<- c("Mammal", "Weasel Family", "Carnivorous Mammal")
+img<- img[ ! img$common_name %in% remove, ]
+
+```
+
+
+#Diel Activity Check
+```{r}
+#This code allows us to see when the animals are active (as in, what time of day they were being detected by our cameras). We use this as a proxy for their activity patterns since the cameras have the potential to capture images 24 hours a day. The output will be a graph with dots displayed per species over a 24 hour time interval. The dots represent camera detections. The thicker the dot color, the more detections were captured during that time of that species. If you hover over the dots, the display will read which site the detection occurred at. You can check this output against accepted activity patterns by these species to be sure there aren't errors in the data. 
+
+# First lets convert our timestamp to decimal hours
+img$hours <- hour(img$timestamp) + minute(img$timestamp)/60 + second(img$timestamp)/(60*60)
+
+# Count all of the captures
+tmp <- img %>% group_by(common_name) %>% summarize(count=n())
+
+yform <- list(categoryorder = "array",
+              categoryarray = tmp$common_name)
+
+#create the plot
+fig <- plot_ly(x = img$hours, y = img$common_name,type="scatter",
+               height=1000, text=img$deployment_id, hoverinfo='text',
+               mode   = 'markers',
+               marker = list(size = 5,
+                             color = 'rgba(50, 100, 255, .2)',
+                             line = list(color = 'rgba(0, 0, 0, 0)',
+                                         width = 0))) %>% 
+              layout(yaxis = yform)
+fig
+
+```
+
+```{r}
+#Once finished with the Diel Activity Check, remove the "hours" column so we can proceed with the data analysis. 
+
+# Remove the column
+img$hours <- NULL
+```
+
+
+
+
+####################### SECTION END ###################################
+
+##Analysis Data Creation
+
+The second part of this script prepares the data for analysis. This script follows the work by Christopher Beirne, the Wildlife Coexistence Lab at the University of British Columbia, and the WildCAM network as outlined in Chapter 6 of their manuscript: https://wildcolab.github.io/Introduction-to-Camera-Trap-Data-Management-and-Analysis-in-R/index.html#acknowledgements. 
+
+In this section, I will sort the detections by independent events, determine the sampling effort in camera trap nights, and prepare the dataframes at varying time intervals to carry out statistical analyses later in the process. 
+
+The first step is to create a folder to store the data
+```{r}
+#Make sure that you are in the right directory before beginning this step. In the end, the data folder should contain a processed_data folder. 
+dir.create("data/processed_data")
+```
+
+#Filter to species
+In this step, we want to remove any blank detections. Wildlife Insights should take out most of the blank detections if you select that option, but this code ensures that we have done that. We also want to just focus on mammals, and specifically not humans, so this code removes anything that does not fit that description.
+```{r}
+# Remove observations without animals detected, where we don't know the species, and non-mammals
+ img_sub <- img %>% filter(is_blank==0,                # Remove the blanks
+                          is.na(img$species)==FALSE, # Remove classifications which don't have species 
+                          class=="Mammalia",          # Subset to mammals
+                          species!="sapiens")         # Subset to anything that isn't human
+```
+
+Let's see what mammals we found
+```{r}
+#Summary of our filtration
+img_sub %>% group_by(common_name) %>% summarize(n())
+```
+
+#Create a camera daily activity look-up
+This code tells us when each camera was active.
+```{r}
+# Remove any deployments without end dates
+tmp <- dep[is.na(dep$end_date)==F,]
+
+# Create an empty list to store our days
+daily_lookup <- list()
+
+# Loop through the deployment dataframe and create a row for every day the camera is active
+for(i in 1:nrow(tmp))
+{
+  if(ymd(tmp$start_date[i])!=ymd(tmp$end_date[i]))
+  {
+    daily_lookup[[i]] <- data.frame("date"=seq(ymd(tmp$start_date[i]), ymd(tmp$end_date[i]), by="days"), "placename"=tmp$placename[i])
+  }
+}
+
+# Merge the lists into a dataframe
+row_lookup <- bind_rows(daily_lookup)
+
+# Remove duplicates - when start and end days are the same for successive deployments
+row_lookup <- row_lookup[duplicated(row_lookup)==F,]
+```
+
+Now, set the independence threshold to 30 minutes. This is standard practice. Anything detected beyond the 30 minute window is seen to be a new set of individuals. 
+
+```{r}
+# Set the "independence" interval in minutes
+independent <- 30
+```
+
+We used 'number_of_objects" for our individual count. Specifically, in a burst of 3 photos, we defined our count as the highest number of individuals in any one photo. 
+```{r}
+#This sets our count
+img_sub$animal_count <- img_sub$number_of_objects    
+```
+
+Subset the img_sub data so that there is only one row representing the burst of 3. Get rid of the other two photos in the burst. This code was taken from my "Extract_Image_Metadata_KA.Rmd" undergrad code, which can be found in my github repository called "R-Code-Zooniverse" (https://github.com/keandy16/R-Code-Zooniverse). This code was written in collaboration with Dr. Erika Barthelmess. 
+```{r}
+thresh<-3 #set a threshold for number of seconds between events
+ev<-vector()
+L <- length(img_sub$timestamp)
+i<- length(img_sub$timestamp)
+
+#Order so that the timestamps are grouped by burst. THIS IS KEY
+img_sub<-img_sub[order(img_sub$timestamp),]
+
+#Begin the loop which will determine which photos belong to the burst and then assign them an event number
+for(i in 1:length(img_sub$timestamp)){
+     interval<-diff(img_sub$timestamp)
+     #now convert to minutes
+     
+     ev<-1; Event_num<-numeric() #created new var called ev and set to 1, created empty numeric vector called Event_num. Event_num will store the assigned event for each image
+   }
+cond<- interval > thresh #sets condition for assigning to a new event where minutes corresponds to thresh
+   
+   for(i in 1:(L-1)){
+      if(!cond[i]) ev<-ev 
+      else ev<-ev+1
+      Event_num<-c(Event_num,ev)
+  }
+  Event<-c(1,Event_num)
+  
+#Add the Event column to the img_sub dataframe
+img_sub$Event<-Event
+  
+#This code will pull out rows that have more than 3 per event
+unique(img_sub$Event)
+Table<-img_sub %>% group_by(Event) %>% summarise(frequency = n())
+Data<-Table[(Table$frequency>3),]
+
+#Now subset the data so you have one row representing the whole burst
+img_sub<- img_sub %>%
+  group_by(Event) %>%
+  filter(row_number()==1)
+
+```
+
+
+Order the data by deployment_id and species
+```{r}
+img_tmp <- img_sub %>%
+              arrange(deployment_id2) %>%        # Order by deployment_id
+              group_by(deployment_id2, sp) %>%   # Group species together
+              mutate(duration = int_length(timestamp %--% lag(timestamp))) # Calculate the gap between successive detections
+```
+
+Next, determine independence of images. The end result should create an "event" that groups by species and each new number (i.e., 30 min independence between photos) symbolizes a new group of individuals in front of the camera. 
+```{r}
+library(stringr)
+# Give a random value to all cells
+img_tmp$event_id <- 9999
+
+# Create a counter
+counter <- 1
+
+# Make a unique code that has one more zero than rows in your dataframe  
+num_code <- as.numeric(paste0(nrow(img_sub),0))
+
+# Loop through img_tmp - if gap is greater than the threshold -> give it a new event ID
+for (i in 2:nrow(img_tmp)) {
+  img_tmp$event_id[i-1]  <- paste0("E", str_pad(counter, nchar(num_code), pad = "0"))
+  
+  if(is.na(img_tmp$duration[i]) | abs(img_tmp$duration[i]) > (independent * 60))
+    {
+      counter <- counter + 1
+    }
+}
+
+# Update the information for the last row - the loop above always updates the previous row... leaving the last row unchanged
+   
+ # group ID  for the last row
+ if(img_tmp$duration[nrow(img_tmp)] < (independent * 60)|
+    is.na(img_tmp$duration[nrow(img_tmp)])){
+   img_tmp$event_id[nrow(img_tmp)] <- img_tmp$event_id[nrow(img_tmp)-1]
+ } else{
+   counter <- counter + 1
+   img_tmp$event_id[nrow(img_tmp)] <- paste0("E", str_pad(counter, nchar(num_code), pad = "0"))
+ }
+
+# remove the duration column
+img_tmp$duration <- NULL
+```
+
+
+#Extract additional information for each event
+This chunk of code adds information to each event, including determining the maximum number of objects in the event (count), the duration of the event (in seconds), and the total number of photos in the event. 
+```{r}
+  # find out the last and the first of the time in the group
+  top <- img_tmp %>% group_by(event_id) %>% top_n(1,timestamp) %>% dplyr::select(event_id, timestamp)
+  bot <- img_tmp %>% group_by(event_id) %>% top_n(-1,timestamp) %>% dplyr::select(event_id, timestamp)
+  names(bot)[2] <- c("timestamp_end")
+  
+  #Add how many images were in the independent event
+  img_num <- img_tmp %>% group_by(event_id) %>% summarise(event_observations=n())
+  
+  #Add how many individuals were detected in the independent event
+  event_grp <- img_tmp %>% group_by(event_id) %>% summarise(event_groupsize=max(animal_count))
+
+  # calculate the duration and add the other elements
+  diff <-  top %>% left_join(bot, by="event_id") %>%
+      mutate(event_duration=abs(int_length(timestamp %--% timestamp_end))) %>%
+      left_join(event_grp, by="event_id")%>%
+      left_join(img_num, by="event_id")
+
+  # Remove columns you don't need
+  diff$timestamp   <-NULL
+  diff$timestamp_end <-NULL
+  
+  # remove duplicates
+  diff <- diff[duplicated(diff)==F,]
+  
+  #Merge the img_tmp with the event data
+  img_tmp <-  img_tmp %>%
+   left_join(diff,by="event_id")
+```
+
+Finally, subset each row of the event to create the independent dataframe
+```{r}
+# Remove duplicates
+ind_dat <- img_tmp[duplicated(img_tmp$event_id)==F,]
+```
+
+Remove detections outside of when the cameras were deemed active
+```{r}
+# Make a  unique code for ever day and deployment where cameras were functioning
+tmp <- paste(row_lookup$date, row_lookup$placename)
+
+#Subset ind_dat to data that matches the unique codes
+ind_dat <- ind_dat[paste(substr(ind_dat$timestamp,1,10), ind_dat$placename) %in% tmp, ]
+```
+
+Make the species column a 'factor' to make future analysis simpler.
+```{r}
+ind_dat$sp <- as.factor(ind_dat$sp)
+ind_dat$common_name<- as.factor(ind_dat$common_name)
+```
+
+Condense taxa list to remove duplicates
+```{r}
+ind_dat$common_name <- sub('Brown Rat','Rodentia',ind_dat$common_name)
+ind_dat$common_name <- sub('Cervidae Family','Mule Deer',ind_dat$common_name)
+ind_dat$common_name <- sub('Cricetidae Family','Rodentia',ind_dat$common_name)
+ind_dat$common_name <- sub('Eastern Gray Squirrel','Western Gray Squirrel',ind_dat$common_name)
+ind_dat$common_name <- sub('House Mouse','Rodentia',ind_dat$common_name)
+ind_dat$common_name <- sub('House Rat','Rodentia',ind_dat$common_name)
+ind_dat$common_name <- sub('Pacific Marten','Martes Species',ind_dat$common_name)
+ind_dat$common_name <- sub('Mouse Species','Rodentia',ind_dat$common_name)
+ind_dat$common_name <- sub('Muridae Family','Rodentia',ind_dat$common_name)
+ind_dat$common_name <- sub("Townsend's Chipmunk","Neotamias Species",ind_dat$common_name)
+ind_dat$common_name <- sub('Snowshoe Hare','Rabbit and Hare Family',ind_dat$common_name)
+ind_dat$common_name <- sub('Sciuridae Family','Western Gray Squirrel',ind_dat$common_name)
+ind_dat$common_name <- sub('Vole Species','Rodentia',ind_dat$common_name)
+ind_dat$common_name <- sub('Woodrat or Rat Species','Rodentia',ind_dat$common_name)
+ind_dat$common_name <- sub('Woodrat or Rat or Mouse Species	','Rodentia',ind_dat$common_name)
+ind_dat$common_name <- sub('Woodrat or Rat or Rodentia','Rodentia',ind_dat$common_name)
+ind_dat$common_name <- sub('Lagomorpha Order','Rabbit and Hare Family',ind_dat$common_name)
+ind_dat$common_name <- sub('Lepus Species','Rabbit and Hare Family',ind_dat$common_name)
+ind_dat$common_name <- sub('Canine Family','Coyote',ind_dat$common_name)
+ind_dat$common_name <- sub('Rodentiaia','Rodentia',ind_dat$common_name)
+ind_dat$common_name <- sub('Rodentia','Rodent',ind_dat$common_name) #This needs to come last to match the common name list
+
+remove<- c("Mammal", "Weasel Family", "Carnivorous Mammal")
+ind_dat<- ind_dat[ ! ind_dat$common_name %in% remove, ]
+```
+
+Check how many independent detections went into the HMSC model
+```{r}
+ind_dat_HMSC <- ind_dat [(!(ind_dat$common_name == "Red Fox") & !(ind_dat$common_name == "Red Squirrel") & !(ind_dat$common_name == "Puma") & !(ind_dat$common_name == "Martes Species") & !(ind_dat$common_name == "Western Spotted Skunk") & !(ind_dat$common_name == "Long-tailed Weasel") & !(ind_dat$common_name == "Stoat") & !(ind_dat$common_name == "Elk") & !(ind_dat$common_name == "Carolina Flying Squirrel") & !(ind_dat$common_name == "American Beaver") & !(ind_dat$common_name == "Striped Skunk") & !(ind_dat$common_name == "Neotamias Species") & !(ind_dat$common_name == "Nutria")),]
+
+```
+
+
+#Create analysis dataframes
+
+1) Independent detections - at 30 min threshold 
+```{r}
+write.csv(ind_dat, paste0("data/processed_data/",ind_dat$project_id[1], "_",independent ,"min_independent_detections.csv"), row.names = F)
+
+# also write the cleaned all detections file (some activity analyses require it)
+write.csv(img_tmp, paste0("data/processed_data/",ind_dat$project_id[1], "_raw_detections.csv"), row.names = F)
+```
+
+2) Daily lookup - a dataframe telling when all the cameras were active. 
+```{r}
+write.csv(row_lookup, paste0("data/processed_data/",ind_dat$project_id[1], "_daily_lookup.csv"), row.names = F)
+```
+
+3) Unique camera locations
+```{r}
+#Subset the columns
+tmp <- dep[, c("project_id", "placename", "longitude", "latitude", "feature_type")]
+# Remove duplicated rows
+tmp<- tmp[duplicated(tmp)==F,]
+# write the file
+write.csv(tmp, paste0("data/processed_data/",ind_dat$project_id[1], "_camera_locations.csv"), row.names = F)
+```
+
+4) Final species list - just those included in the independent dataframe
+```{r}
+#subset to include just the species in the independent detections dataframe
+tmp <- sp_list[sp_list$common_name %in% ind_dat$common_name,]
+
+
+# Remove the 'verified' column
+tmp$verified <- NULL
+
+# We will replace the spaces in the species names with dots, this will make things easier for us later (as column headings with spaces in are annoying).
+library(stringr)
+tmp$sp <- str_replace(tmp$sp, " ", ".")
+
+#export the dataframe
+write.csv(tmp, paste0("data/processed_data/",ind_dat$project_id[1], "_species_list.csv"), row.names = F)
+```
+
+
+5 & 6) A ‘site x species’ matrix of the number of independent detections and species counts across the full study period
+```{r}
+# Total counts
+  # Station / Month / deport / Species      
+  tmp <- row_lookup
+  
+  # Calculate the number of days at each site  
+  total_obs <- tmp %>% 
+      group_by(placename) %>%
+      summarise(days = n())
+  
+  # Convert to a data frame
+  total_obs <- as.data.frame(total_obs)
+  
+  # Add columns for each species  
+  total_obs[, levels(ind_dat$common_name)] <- NA
+  # Duplicate for counts
+  total_count <- total_obs
+  # Test counter
+  i <-1
+  # For each station, count the number of individuals/observations
+  for(i in 1:nrow(total_obs))
+    {
+      tmp <- ind_dat[ind_dat$placename==total_obs$placename[i],]
+      
+      tmp_stats <- tmp %>%  group_by(common_name, .drop=F) %>% summarise(obs=n(), count=sum(animal_count))
+      
+      total_obs[i,as.character(tmp_stats$common_name)] <- tmp_stats$obs
+      total_count[i,as.character(tmp_stats$common_name)] <- tmp_stats$count
+    }
+
+  
+# Save them
+write.csv(total_obs, paste0("data/processed_data/",ind_dat$project_id[1], "_",independent ,"min_independent_total_observations.csv"), row.names = F) 
+
+write.csv(total_count, paste0("data/processed_data/",ind_dat$project_id[1], "_",independent ,"min_independent_total_counts.csv"), row.names = F) 
+```
+
+
+7 & 8) A ‘site_month x species’ matrix of the number of independent detections and species counts across for each month in the study period
+```{r}
+# Monthly counts
+
+  # Station / Month / days / Covariates / Species      
+  tmp <- row_lookup
+  # Simplify the date to monthly
+  tmp$date <- substr(tmp$date,1,7)
+  
+  # Calculate the number of days in each month  
+  mon_obs <- tmp %>% 
+      group_by(placename,date ) %>%
+      summarise(days = n())
+  # Convert to a data frame
+  mon_obs <- as.data.frame(mon_obs)
+    
+  mon_obs[, levels(ind_dat$common_name)] <- NA
+  mon_count <- mon_obs
+  
+  # For each month, count the number of individuals/observations
+  for(i in 1:nrow(mon_obs))
+    {
+      tmp <- ind_dat[ind_dat$placename==mon_obs$placename[i] & substr(ind_dat$timestamp,1,7)== mon_obs$date[i],]
+      
+      tmp_stats <- tmp %>%  group_by(common_name, .drop=F) %>% summarise(obs=n(), count=sum(animal_count))
+      
+      mon_obs[i,as.character(tmp_stats$common_name)] <- tmp_stats$obs
+      mon_count[i,as.character(tmp_stats$common_name)] <- tmp_stats$count
+      
+    }
+    
+write.csv(mon_obs, paste0("data/processed_data/",ind_dat$project_id[1], "_",independent ,"min_independent_monthly_observations.csv"), row.names = F) 
+
+write.csv(mon_count, paste0("data/processed_data/",ind_dat$project_id[1], "_",independent ,"min_independent_monthly_counts.csv"), row.names = F) 
+```
+
+9 & 10) A ‘site_week x species’ matrix of the number of independent detections and species counts across for each week in the study period
+```{r}
+# Weekly format
+  # Station / Month / days / Covariates / Species      
+  tmp <- row_lookup
+  # Simplify the date to year-week
+  tmp$date <- strftime(tmp$date, format = "%Y-W%U")
+  # The way this is coded is the counter W01 starts at the first Sunday of the year, everything before that is W00. Weeks do not roll across years.
+  
+  # Calculate the number of days in each week  
+  week_obs <- tmp %>% 
+      group_by(placename,date ) %>%
+      summarise(days = n())
+  
+  # Convert to a data frame
+  week_obs <- as.data.frame(week_obs)
+  
+  # Add species columns  
+  week_obs[, levels(ind_dat$common_name)] <- NA
+  
+  # Duplicate for counts
+  week_count <- week_obs
+  
+  # For each week, count the number of individuals/observations
+  for(i in 1:nrow(week_obs))
+    {
+      tmp <- ind_dat[ind_dat$placename==week_obs$placename[i] & strftime(ind_dat$timestamp, format = "%Y-W%U")== week_obs$date[i],]
+      
+      tmp_stats <- tmp %>%  group_by(common_name, .drop=F) %>% summarise(obs=n(), count=sum(animal_count))
+      
+      week_obs[i,as.character(tmp_stats$common_name)] <- tmp_stats$obs
+      week_count[i,as.character(tmp_stats$common_name)] <- tmp_stats$count
+      
+    }
+
+#Export the dataframes
+write.csv(week_obs, paste0("data/processed_data/",ind_dat$project_id[1], "_",independent ,"min_independent_weekly_observations.csv"), row.names = F) 
+
+write.csv(week_count, paste0("data/processed_data/",ind_dat$project_id[1], "_",independent ,"min_independent_weekly_counts.csv"), row.names = F) 
+```
+
+11 & 12) A ‘site_day x species’ matrix of the number of independent detections and species counts across for each day a station was active in the study period
+```{r}
+# Daily format
+  # Station / Month / days / Covariates / Species      
+  tmp <- row_lookup
+  tmp$days <- 1
+  # Add species columns  
+  tmp[, levels(ind_dat$common_name)] <- NA
+  
+  day_obs <- tmp
+  day_count <- tmp
+# For each week, count the number of individuals/observations
+  for(i in 1:nrow(day_obs))
+    {
+      tmp <- ind_dat[ind_dat$placename==day_obs$placename[i] & strftime(ind_dat$timestamp, format = "%Y-%m-%d")== day_obs$date[i],]
+      
+      tmp_stats <- tmp %>%  group_by(common_name, .drop=F) %>% summarise(obs=n(), count=sum(animal_count))
+      
+      day_obs[i,as.character(tmp_stats$common_name)] <- tmp_stats$obs
+      day_count[i,as.character(tmp_stats$common_name)] <- tmp_stats$count
+        
+      
+  }
+
+#Export the dataframes
+write.csv(day_obs, paste0("data/processed_data/",ind_dat$project_id[1], "_",independent ,"min_independent_daily_observations.csv"), row.names = F) 
+
+write.csv(day_count, paste0("data/processed_data/",ind_dat$project_id[1], "_",independent ,"min_independent_daily_counts.csv"), row.names = F) 
+```
+
+
+#Final Check
+This check is to be sure the observations and counts are the same across all temporal scales.
+
+Observations - modified this because the sums weren't presenting as the same. Used sumnum from the "easyr" package. 
+```{r}
+library(easyr)
+#Create the parameters for the table
+tmp <- cbind(data.frame("Time"=c("Total", "Monthly", "Weekly", "Daily")),
+rbind(sumnum(total_obs, na.rm=T),
+sumnum(mon_obs, na.rm=T),
+sumnum(week_obs, na.rm=T),
+sumnum(day_obs, na.rm=T)  ))
+
+#Create a table of observations of each species across all temporal scales. They should be the same values for all temporal scales.
+tmp %>%
+  kbl() %>%
+  kable_styling(full_width = T) %>%
+  column_spec(1, bold = T, border_right = T)%>% 
+  kableExtra::scroll_box(width = "100%")
+```
+
+Counts - modified this because the sums weren't presenting as the same. Used sumnum from the "easyr" package. 
+```{r}
+#Create the parameters for the table
+tmp <- cbind(data.frame("Time"=c("Total", "Monthly", "Weekly", "Daily")),
+rbind(sumnum(total_count, na.rm = T),
+sumnum(mon_count, na.rm = T),
+sumnum(week_count, na.rm = T),
+sumnum(day_count, na.rm = T)  ))
+
+#Create a table of counts of each species across all temporal scales. They should be the same values for all temporal scales.
+tmp %>%
+  kbl() %>%
+  kable_styling(full_width = T) %>%
+  column_spec(1, bold = T, border_right = T)%>% 
+  kableExtra::scroll_box(width = "100%")
+```
+
+
+Now we are ready to begin assembling the covariates and analyzing the data!
+
+------------------------ END --------------------------------------------
+
+
+
