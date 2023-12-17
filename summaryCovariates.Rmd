@@ -1,0 +1,390 @@
+---
+title: "Summary of Vegetation Survey Data"
+output: html_notebook
+author: Kate Andy
+date of last edit: March 2, 2023
+---
+The purpose of this R Notebook is to summarize the data collected from vegetation surveys over the season so I can add them to the master covariates data table.
+
+Clear the workspace
+```{r}
+rm(list=ls())
+```
+
+Set the working directory
+```{r}
+setwd("/Users/kateandy/Documents/R/Riparian_Corridors")
+```
+
+Load the necessary packages
+```{r}
+library(dplyr)
+library(readr)
+```
+
+Load the seaonsal data for Squamish and Maple Ridge
+```{r}
+#Stream Summer Maple Ridge
+StreamSummerMR<- read_csv("Veg_Surveys/Veg_survey_summer_MR_stream.csv")
+
+#Non-stream Summer Maple Ridge
+nonStreamSummerMR<- read_csv("Veg_Surveys/Veg_survey_summer_MR_nonStream.csv")
+
+#Stream Fall Maple Ridge
+StreamFallMR <- read_csv("Veg_Surveys/Veg_survey_fall_MR_stream.csv")
+
+#Non-stream Fall Maple Ridge
+nonStreamFallMR <- read_csv("Veg_Surveys/Veg_survey_fall_MR_nonStream.csv")
+
+#Stream Summer Squamish
+StreamSummerSquam <- read_csv("Veg_Surveys/Veg_survey_summer_Squamish_stream.csv")
+
+#Non-stream Summer Squamish
+nonStreamSummerSquam <- read_csv("Veg_Surveys/Veg_survey_summer_Squamish_nonStream.csv")
+
+#Stream Fall Squamish
+StreamFallSquam <- read_csv("Veg_Surveys/Veg_survey_fall_Squamish_stream.csv")
+
+#Non-stream Fall Squamish
+nonStreamFallSquam<- read_csv("Veg_Surveys/Veg_survey_fall_Squamish_nonStream.csv")
+
+#Stream Winter Squamish
+StreamWinterSquam <-  read_csv("Veg_Surveys/Veg_survey_winter_Squamish_stream.csv")
+
+#Non-stream Winter Squamish
+nonStreamWinterSquam <-read_csv("Veg_Surveys/Veg_survey_winter_Squamish_nonStream.csv")
+
+#Stream Winter Maple Ridge
+StreamWinterMR<- read_csv("Veg_Surveys/Veg_survey_winter_MR_stream.csv")
+
+#NOn-stream Winter Maple Ridge
+nonStreamWinterMR <- read_csv("Veg_Surveys/Veg_survey_winter_MR_nonStream.csv")
+
+#Stream Spring Squamish
+StreamSpringSquam<- read_csv("Veg_Surveys/Veg_survey_spring_Squamish_stream.csv")
+
+#Non-stream Spring Squamish
+nonStreamSpringSquam<- read_csv("Veg_Surveys/Veg_survey_spring_Squamish_nonStream.csv")
+
+#Stream Spring Maple Ridge
+StreamSpringMR<- read_csv("Veg_Surveys/Veg_survey_spring_MR_stream.csv")
+
+#Non-stream Spring Maple Ridge
+nonStreamSpringMR<- read_csv("Veg_Surveys/Veg_survey_spring_MR_nonStream.csv")
+```
+
+
+Summarize the data for the average depth of duff per site
+```{r}
+#Summer Squamish
+DuffSummerSquam <- nonStreamSummerSquam %>% group_by(`Site Name`) %>% summarise(
+  Duff_avg = mean(`Depth of Duff`)
+)
+
+#Summer Maple Ridge
+DuffSummerMR <- nonStreamSummerMR %>% group_by(`Site Name`) %>% summarise(
+  Duff_avg = mean(`Depth of Duff`)
+)
+
+#Fall Squamish
+DuffFallSquam<- nonStreamFallSquam %>% group_by(`Site Name`) %>% summarise(
+  Duff_avg = mean(`Depth of Duff`)
+)
+
+#Fall Maple Ridge
+DuffFallMR <- nonStreamFallMR %>% group_by(`Site Name`) %>% summarise(
+  Duff_avg = mean(`Depth of Duff`)
+)
+
+#Winter Squamish
+DuffWinterSquam<- nonStreamWinterSquam %>% group_by(`Site Name`) %>% summarise(
+  Duff_avg = mean(`Depth of Duff`)
+)
+
+#Winter Maple Ridge
+DuffWinterMR<- nonStreamWinterMR %>% group_by(`Site Name`) %>% summarise(
+  Duff_avg = mean(`Depth of Duff`)
+)
+
+#Spring Squamish
+DuffSpringSquam<- nonStreamSpringSquam %>% group_by(`Site Name`) %>% summarise(
+  Duff_avg = mean(`Depth of Duff`)
+)
+
+#Spring Maple Ridge
+DuffSpringMR<- nonStreamSpringMR %>% group_by(`Site Name`) %>% summarise(
+  Duff_avg = mean(`Depth of Duff`)
+)
+```
+
+
+Summarize the data for the average tallest woody and herbaceous height
+```{r}
+#Summer Squamish
+#get an average of the woody values
+nonStreamSummerSquam$Average_woody_height<- rowMeans(nonStreamSummerSquam[,c(12:17)])
+
+#get an average of the herbaceous values
+nonStreamSummerSquam$Average_herbaceous_height<- rowMeans(nonStreamSummerSquam[,c(18:23)])
+
+#summarize the data by mean woody and herbaceous height
+VegHeightSummerSquam<- nonStreamSummerSquam %>% group_by(`Site Name`) %>% summarise(
+  Woody = mean(Average_woody_height), 
+  Herbaceous = mean(Average_herbaceous_height)
+)
+
+#Summer Maple Ridge
+#get an average of the woody values
+nonStreamSummerMR$Average_woody_height<- rowMeans(nonStreamSummerMR[,c(12:17)])
+
+#get an average of the herbaceous values
+nonStreamSummerMR$Average_herbaceous_height<- rowMeans(nonStreamSummerMR[,c(18:23)])
+
+#summarize the data by mean woody and herbaceous height
+VegHeightSummerMR<- nonStreamSummerMR %>% group_by(`Site Name`) %>% summarise(
+  Woody = mean(Average_woody_height), 
+  Herbaceous = mean(Average_herbaceous_height)
+)
+
+#Fall Squamish
+#get an average of the woody values
+nonStreamFallSquam$Average_woody_height<- rowMeans(nonStreamFallSquam[,c(12:17)])
+
+#get an average of the herbaceous values
+nonStreamFallSquam$Average_herbaceous_height<- rowMeans(nonStreamFallSquam[,c(18:23)])
+
+#summarize the data by mean woody and herbaceous height
+VegHeightFallSquam<- nonStreamFallSquam %>% group_by(`Site Name`) %>% summarise(
+  Woody = mean(Average_woody_height), 
+  Herbaceous = mean(Average_herbaceous_height)
+)
+
+#Fall Maple Ridge
+#get an average of the woody values
+nonStreamFallMR$Average_woody_height<- rowMeans(nonStreamFallMR[,c(12:17)])
+
+#get an average of the herbaceous values
+nonStreamFallMR$Average_herbaceous_height<- rowMeans(nonStreamFallMR[,c(18:23)])
+
+#summarize the data by mean woody and herbaceous height
+VegHeightFallMR<- nonStreamFallMR %>% group_by(`Site Name`) %>% summarise(
+  Woody = mean(Average_woody_height), 
+  Herbaceous = mean(Average_herbaceous_height)
+)
+
+#Winter Squamish
+#get an average of the woody values - calling 11-16 columns because no 'predicted line of movement' column, unlike in the fall and summer dataframe
+nonStreamWinterSquam$Average_woody_height<- rowMeans(nonStreamWinterSquam[,c(11:16)])
+
+#get an average of the herbaceous values
+nonStreamWinterSquam$Average_herbaceous_height<- rowMeans(nonStreamWinterSquam[,c(17:22)])
+
+#summarize the data by mean woody and herbaceous height
+VegHeightWinterSquam<- nonStreamWinterSquam %>% group_by(`Site Name`) %>% summarise(
+  Woody = mean(Average_woody_height), 
+  Herbaceous = mean(Average_herbaceous_height)
+)
+
+#Winter Maple Ridge
+#get an average of the woody values - calling 11-16 columns because no 'predicted line of movement' column, unlike in the fall and summer dataframe
+nonStreamWinterMR$Average_woody_height<- rowMeans(nonStreamWinterMR[,c(11:16)])
+
+#get an average of the herbaceous values
+nonStreamWinterMR$Average_herbaceous_height<- rowMeans(nonStreamWinterMR[,c(17:22)])
+
+#summarize the data by mean woody and herbaceous height
+VegHeightWinterMR<- nonStreamWinterMR %>% group_by(`Site Name`) %>% summarise(
+  Woody = mean(Average_woody_height), 
+  Herbaceous = mean(Average_herbaceous_height)
+)
+
+#Spring Squamish
+#get an average of the woody values - calling 11-16 columns because no 'predicted line of movement' column, unlike in the fall and summer dataframe
+nonStreamSpringSquam$Average_woody_height<- rowMeans(nonStreamSpringSquam[,c(11:16)])
+
+#get an average of the herbaceous values
+nonStreamSpringSquam$Average_herbaceous_height<- rowMeans(nonStreamSpringSquam[,c(17:22)])
+
+#summarize the data by mean woody and herbaceous height
+VegHeightSpringSquam<- nonStreamSpringSquam %>% group_by(`Site Name`) %>% summarise(
+  Woody = mean(Average_woody_height), 
+  Herbaceous = mean(Average_herbaceous_height)
+)
+
+#Spring Maple Ridge
+#get an average of the woody values - calling 11-16 columns because no 'predicted line of movement' column, unlike in the fall and summer dataframe
+nonStreamSpringMR$Average_woody_height<- rowMeans(nonStreamSpringMR[,c(11:16)])
+
+#get an average of the herbaceous values
+nonStreamSpringMR$Average_herbaceous_height<- rowMeans(nonStreamSpringMR[,c(17:22)])
+
+#summarize the data by mean woody and herbaceous height
+VegHeightSpringMR<- nonStreamSpringMR %>% group_by(`Site Name`) %>% summarise(
+  Woody = mean(Average_woody_height), 
+  Herbaceous = mean(Average_herbaceous_height)
+)
+```
+
+
+Summarize for mean canopy cover
+```{r}
+#Summer Maple Ridge non-stream
+CanopySummerMR<- nonStreamSummerMR %>% group_by(`Site Name`) %>% summarise(
+  Canopy = mean(`Canopy Cover`)
+)
+
+#Summer Maple Ridge stream
+CanopySSummerMR<- StreamSummerMR %>% group_by(`Site Name`) %>% summarise(
+  Canopy = mean(`Canopy Cover`)
+)
+
+#Summer Squamish non-stream
+CanopySummeSquam <- nonStreamSummerSquam %>% group_by(`Site Name`) %>% summarise(
+  Canopy = mean(`Canopy Cover`)
+)
+
+#Summer Squamish stream
+CanopySSummerSquam<- StreamSummerSquam %>% group_by(`Site Name`) %>% summarise(
+  Canopy = mean(`Canopy Cover`)
+)
+
+#Fall Maple Ridge non-stream
+CanopyFallMR<- nonStreamFallMR %>% group_by(`Site Name`) %>% summarise(
+  Canopy = mean(`Canopy Cover`)
+)
+
+#Fall Maple Ridge stream
+CanopySFallMR <- StreamFallMR %>% group_by(`Site Name`) %>% summarise(
+  Canopy = mean(`Canopy Cover`)
+)
+
+#Fall Squamish non-stream
+CanopyFallSquam<- nonStreamFallSquam %>% group_by(`Site Name`) %>% summarise(
+  Canopy = mean(`Canopy Cover`)
+)
+
+#Fall Squamish stream
+CanopySFallSquam<- StreamFallSquam %>% group_by(`Site Name`) %>% summarise(
+  Canopy = mean(`Canopy Cover`)
+)
+
+#Winter Maple Ridge non-stream
+CanopyWinterMR<- nonStreamWinterMR %>% group_by(`Site Name`) %>% summarise(
+  Canopy = mean(`Canopy Cover`)
+)
+
+#Winter Maple Ridge stream
+CanopySWinterMR <- StreamWinterMR %>% group_by(`Site Name`) %>% summarise(
+  Canopy = mean(`Canopy Cover`)
+)
+
+#Winter Squamish non-stream
+CanopyWinterSquam<- nonStreamWinterSquam %>% group_by(`Site Name`) %>% summarise(
+  Canopy = mean(`Canopy Cover`)
+)
+
+#Winter Squamish stream
+CanopySWinterSquam<- StreamWinterSquam %>% group_by(`Site Name`) %>% summarise(
+  Canopy = mean(`Canopy Cover`)
+)
+
+#Spring Squamish non-stream
+CanopySpringSquam<- nonStreamSpringSquam %>% group_by(`Site Name`) %>% summarise(
+  Canopy = mean(`Canopy Cover`)
+)
+
+#Spring Squamish stream
+CanopySSpringSquam<- StreamSpringSquam %>% group_by(`Site Name`) %>% summarise(
+  Canopy = mean(`Canopy Cover`)
+)
+
+#Spring Maple Ridge non-stream
+CanopySpringMR<- nonStreamSpringMR %>% group_by(`Site Name`) %>% summarise(
+  Canopy = mean(`Canopy Cover`)
+)
+
+#Spring Maple Ridge stream
+CanopySSpringMR <- StreamSpringMR %>% group_by(`Site Name`) %>% summarise(
+  Canopy = mean(`Canopy Cover`)
+)
+
+
+```
+
+
+Now let's bring in the tree data and look at the total DBH and dominant species
+```{r}
+Trees<- read_csv("Veg_Surveys/Tree_Inventory.csv")
+```
+
+Summarize by total DBH and dominant species
+```{r}
+#First, remove the shrubs from our tree list
+treesFinal<-Trees[!(Trees$`Tree Species`=="vine maple" | Trees$`Tree Species`=="pacific crab apple"| Trees$`Tree Species`=="common hawthorn" | Trees$`Tree Species`=="choke cherry" | Trees$`Tree Species`=="bitter cherry" | Trees$`Tree Species`=="red osier dogwood"),]
+
+#Summarize by total DBH and dominant species
+DBHSummary<- treesFinal %>% group_by(Site) %>% summarise(
+  DBH_tot = sum(DBH, na.rm = TRUE)
+)
+
+#export csv
+write.csv(DBHSummary, file = "DBHSummary.csv")
+
+#Make basal area a numeric variable
+treesFinal$`Basal Area per Tree`<-as.numeric(treesFinal$`Basal Area per Tree`)
+
+#Summarize frequency of tree species, total DBH, and total basal area by site
+TreeSummary<- treesFinal %>% group_by(Site, `Tree Species`) %>% summarise(
+  Frequency = n(),
+  DBH = sum(DBH),
+  Area = sum(`Basal Area per Tree`)
+) 
+
+#now just pull out the top 3 species per site
+TreeSummary<- TreeSummary %>% top_n(4,Frequency)
+
+#Look at the unique tree species
+Species<- unique(TreeSummary$`Tree Species`)
+Species
+
+
+```
+
+Summarize shrub inventory data
+```{r}
+Shrubs <- read.csv("Veg_Surveys/Shrub_Inventory.csv")
+
+#Look at the unique shrub species
+ShrubSpecies<- unique(Shrubs$Shrub.Species)
+ShrubSpecies
+
+ShrubsGroup<-Shrubs %>% group_by(Shrub.Species)
+```
+
+To determine the stream size classification, let's have a look at the distribution of bankfull widths across all sites
+```{r}
+covariates <- read_csv("data/covariates.csv")
+```
+
+Subset to the bankfull observations
+```{r}
+#Extract the variables desired 
+bankfull<-covariates[,c("placename", "bankfull_width_summer", "bankfull_width_winter", "bankfull_width_spring")]
+
+#Find the bankfull means
+bankfull$mean<-rowMeans(bankfull[,2:4], na.rm = TRUE)
+
+#Summarize the bankfull means and range
+bankfullSummary<- bankfull[,c(1,5)]
+range(bankfullSummary$mean)
+
+
+#plot the distribution of means
+library(ggplot2)
+ggplot(bankfullSummary, aes(x=mean)) + geom_histogram(color="black", fill="white", binwidth = 1)
+
+```
+
+
+------------------------ END ----------------------
+

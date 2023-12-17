@@ -1,0 +1,158 @@
+---
+title: "Community Composition"
+output: html_document
+author: Katherine Andy
+---
+
+The purpose of this script is to explore patterns of species richness and community composition. Species accumulation curves are generated from this code. Shannon and Simpson's diversity indices are also produced.
+
+This script follows the technique developed by Christopher Beirne and the Wildlife Coexistence Lab at the University of British Columbia, and the WildCAM network. I will be following the stepwise process outlined in Chapter 9 of this manuscript: https://wildcolab.github.io/Introduction-to-Camera-Trap-Data-Management-and-Analysis-in-R/index.html.
+
+Clear the working environment
+```{r}
+rm(list=ls())
+```
+
+
+Load the packages
+```{r}
+# Check you have them and load them
+list.of.packages <- c("iNEXT", "kableExtra", "tidyr", "ggplot2", "gridExtra", "dplyr", "viridis")
+
+new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
+if(length(new.packages)) install.packages(new.packages)
+lapply(list.of.packages, require, character.only = TRUE)
+```
+
+Observed Richness - this tells us how many mammal taxa we detected
+```{r}
+#load the final species list dataframe
+sp_summary <- read.csv("data/processed_data/2004250_species_list.csv", header=T)
+
+# Use nrow() to count the number of species
+nrow(sp_summary)
+```
+
+##Estimated richness
+
+Let's make a species accumulation curve to see if we had enough sampling effort
+```{r}
+library(iNEXT); library(ggplot2); library(gridExtra)
+```
+
+Prepare the dataframe to make the species accumulation curve
+```{r}
+#read in the total observations data
+total_obs <- read.csv("data/processed_data/_30min_independent_total_observations.csv", header=T)
+
+#format the species common name into Genus.species format
+sp_summary$common_name <- gsub(" ", ".", sp_summary$common_name, fixed=TRUE)
+sp_summary$common_name <- gsub("'", ".", sp_summary$common_name, fixed=TRUE)
+sp_summary$common_name <- gsub("-", ".", sp_summary$common_name, fixed=TRUE)
+
+#Turn species counts into 0's and 1's
+inc_dat <- total_obs %>% 
+      mutate(across(sp_summary$common_name, ~+as.logical(.x)))
+
+# Make an empty list to store our data
+project_level <- list()
+
+#Sum all of the observations of each species (colSums), and then make it an element within the project_level list
+ project_level[[1]] <-  c(nrow(inc_dat),  # First count the number of stations
+                     # Then subset the detections to those stations, sum the columns, and sort the incidents
+                     inc_dat[, sp_summary$common_name] %>%  colSums(na.rm = T) %>% sort(decreasing=T))
+#Give it a name
+names(project_level) <- "project_level"
+```
+
+Run the iNext model
+```{r}
+out <- iNEXT(project_level,          # The data frame
+             q=0,                    # The type of diversity estimator (q = species richness, 1 = Shannon diversity, 2 = Simpson diversity)
+             datatype="incidence_freq",   # The type of analysis
+             knots=40,                    # The number of data points in your line (more = smoother)
+             se=TRUE,                     # Logical statement if you want confidence intervals
+             conf=0.95,                   # The level of confidence intervals
+             nboot=50)                    # The number of replications to perform - this generates your confidence interval - the bigger the number the longer the run time
+```
+
+Now plot the results. We will plot sampling effort in two ways. The first way is the number of cameras vs species richness. The other way addresses sample coverage. Chris describes sample coverage as the proportion of the total number of individuals that belong to the species detected in the sample. That is, if you have a high sample coverage and you add an un-surveyed individual to the surveyed population, there is a high likelihood that we have already sampled that species.
+```{r}
+p1 <- ggiNEXT(out, type=1)+ theme_classic() +   #  type 1 = the diversity estimator
+        labs(x = "Survey sites", y = "Richness")+
+  scale_color_manual(values="#800000")+ scale_fill_manual(values = "#808000")+ theme(text=element_text(size=16, 
+       family="Times New Roman"))
+
+  p2 <- ggiNEXT(out, type=2)+ theme_classic() +    #  type 2 = the survey coverage
+        labs(x = "Survey sites", y = "Sampling Coverage")+
+  scale_color_manual(values="#800000")+ scale_fill_manual(values = "#808000") + theme(text=element_text(size=16, 
+       family="Times New Roman"))
+    
+    grid.arrange(p1, p2, nrow = 1)
+```
+
+
+
+Now let's plot it with feature type in mind
+```{r}
+#Read in the dataset
+locs<- read.csv("data/processed_data/2004250_camera_locations_and_covariates.csv")
+
+# Create a new empty list
+inc_locations <- list()
+
+# Make an object containing all of the site ID's for the "Riparian" cameras
+riparian <- locs$placename[locs$habitat_type=="riparian"]
+# And "Matrix" cameras
+matrix <- locs$placename[locs$habitat_type=="matrix"]
+name_to_remove <- "M_HOOG_M1"
+# Use logical indexing to remove the specified name
+matrix <- matrix[matrix != name_to_remove]
+
+#And "Stream" cameras
+stream <- locs$placename[locs$habitat_type=="stream"]
+name_to_remove <- "M_HOOG_S1"
+# Use logical indexing to remove the specified name
+stream <- stream[stream != name_to_remove]
+
+# Only sum the data for each relevent strata
+inc_locations[[1]] <- c(nrow(inc_dat[inc_dat$placename %in% riparian,]),  # Count the number of weeks we have data for in each strata
+                     # Then subset the detections to those stations, sum the columns, and sort the incidents
+                     inc_dat[inc_dat$placename %in% riparian, sp_summary$common_name] %>%  colSums(na.rm=T) %>% sort(decreasing=T))
+
+inc_locations[[2]] <- c(nrow(inc_dat[inc_dat$placename %in% matrix,]),  # Count the number of stations
+                     # Then subset the detections to those stations, sum the columns, and sort the incidents
+                     inc_dat[inc_dat$placename %in% matrix, sp_summary$common_name] %>%  colSums(na.rm=T) %>% sort(decreasing=T))
+
+inc_locations[[3]] <- c(nrow(inc_dat[inc_dat$placename %in% stream,]),  # Count the number of stations
+                     # Then subset the detections to those stations, sum the columns, and sort the incidents
+                     inc_dat[inc_dat$placename %in% stream, sp_summary$common_name] %>%  colSums(na.rm=T) %>% sort(decreasing=T))
+
+
+#Give it a name
+
+# Give them names
+names(inc_locations) <- c("Riparian", "Matrix", "Stream")
+```
+
+Now run the model
+```{r}
+out.inc <- iNEXT(inc_locations, q=0, datatype="incidence_freq")
+
+# Sample‐size‐based R/E curves
+ggiNEXT(out.inc, type=1, color.var="Assemblage") +
+       labs(y="Richness", x = "Survey Sites") + 
+  scale_color_manual(values=c("#800000","#e6194B", "#fabed4"))+ scale_fill_manual(values = c("#808000", "#ffd8b1", "#f58231")) +
+theme_classic() + theme(text=element_text(size=16, 
+       family="Times New Roman"))
+```
+
+Plot the figure
+```{r}
+# We also introduce the object t -> which reflects the range of values over which you want to predict species richness
+out <- iNEXT(inc_locations, q=c(0,1,2) ,datatype="incidence_freq" )
+
+ggiNEXT(out, type=1, facet.var="Order.q", color.var="Assemblage") + theme_classic() 
+```
+
+----------------------- END -----------------------
