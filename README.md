@@ -1,5 +1,5 @@
 # Riparian_Corridors
-This repository contains code from my MRM thesis research. My objective was to understand how development intensity, stream channel morphology, and other landscape features determine how mammalian communities use stream, riparian, and matrix habitat types within watersheds.
+This repository contains code from my MRM thesis research. My objective was to understand how development intensity, stream channel morphology, and other landscape features determine how mammalian communities in Squamish and Maple Ridge, British Columbia, use stream, riparian, and matrix habitat types within watersheds.
 
 
 *NOTE*: Much of this code was developed by Christopher Beirne and the Wildlife Coexistence Lab at the University of British Columbia, and the WildCAM network. I followed their technique from the following manuscript: https://wildcolab.github.io/Introduction-to-Camera-Trap-Data-Management-and-Analysis-in-R/.
